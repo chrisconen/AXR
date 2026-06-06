@@ -25,6 +25,12 @@ const AXR_VERSION = '0.2';
 // Alahuzas-prefix: jelzi hogy ez AXR-meta, nem uzleti adat.
 const AXR_INPUT_KEY = '__axr_input';
 
+// 0.3: a generativ (LLM) lepes ezt a markert csatolja a kimenetehez. A
+// tartalma a modell-hivas evidenciaja: model, parameterek, prompt/tool/
+// completion hash (vagy nyers tartalom), usage, finish_reason, reproducibility.
+// A generator innen tolti a receipt 'generation' blokkjat (spec 5.3).
+const AXR_GEN_KEY = '__axr_gen';
+
 // ── Determinisztikus JSON szerializalas ────────────────────────────────────────
 // A hash es az alairas CSAK akkor reprodukalhato, ha a kulcsok sorrendje fix.
 // JSON.stringify nem garantalja ezt mely objektumoknal, ezert sajat szerializalo.
@@ -150,6 +156,58 @@ function splitAxrInput(nodeOutput) {
     return { input, output: clean };
   }
   return { input: undefined, output: nodeOutput };
+}
+
+// ── __axr_gen marker kezelese (0.3) ────────────────────────────────────────────
+// Ugyanaz a minta, mint a splitAxrInput, de a generativ-lepes markerere. Egy
+// generativ node MINDKET markert hordozza (__axr_input + __axr_gen); a generator
+// eloszor a splitAxrInput-ot hivja, majd ezt a maradek kimeneten, hogy a tiszta
+// output_hash egyik markert se tartalmazza.
+//
+// splitAxrGen(nodeOutput) -> { gen, output }
+//   gen    : a generativ capture blokk (model/params/prompt/completion/...), vagy
+//            undefined ha a node nem generativ (nincs marker)
+//   output : a kimenet a __axr_gen marker NELKUL
+function splitAxrGen(nodeOutput) {
+  if (Array.isArray(nodeOutput)) {
+    if (nodeOutput.length === 0) return { gen: undefined, output: nodeOutput };
+    const first = nodeOutput[0];
+    const restItems = nodeOutput.slice(1);
+    if (first && typeof first === 'object' && !Array.isArray(first) && AXR_GEN_KEY in first) {
+      const { [AXR_GEN_KEY]: gen, ...cleanFirst } = first;
+      return { gen, output: [cleanFirst, ...restItems] };
+    }
+    return { gen: undefined, output: nodeOutput };
+  }
+  if (nodeOutput && typeof nodeOutput === 'object' && AXR_GEN_KEY in nodeOutput) {
+    const { [AXR_GEN_KEY]: gen, ...clean } = nodeOutput;
+    return { gen, output: clean };
+  }
+  return { gen: undefined, output: nodeOutput };
+}
+
+// ── Generation blokk epitese a markerbol (0.3, spec 5.3) ───────────────────────
+// A node a nyers anyagot is csatolhatja (prompt/tools/completion) - ekkor itt
+// szamoljuk a hash-eket -, vagy mar elore kiszamolt hash-eket. Egy helyen el,
+// hogy a node es barmely ujraszamolo fel ugyanazt a hash-t kapja.
+//   gen.prompt / gen.completion : nyers ordered message-lista / valasz -> hasheljuk
+//   gen.tools                   : tool-definiciok (vagy null)
+//   gen.*_hash                  : ha a node mar elore hashelt, azt hasznaljuk
+function buildGeneration(gen) {
+  if (!gen || typeof gen !== 'object') return null;
+  const h = (v, pre) => (v !== undefined && v !== null) ? sha256(v) : (pre || null);
+  return {
+    params: gen.params || {},
+    prompt_hash: gen.prompt !== undefined ? sha256(gen.prompt) : (gen.prompt_hash || null),
+    tools_hash: (gen.tools !== undefined && gen.tools !== null) ? sha256(gen.tools) : (gen.tools_hash || null),
+    completion_hash: gen.completion !== undefined ? sha256(gen.completion) : (gen.completion_hash || null),
+    prompt_ref: gen.prompt_ref || null,
+    completion_ref: gen.completion_ref || null,
+    usage: gen.usage || null,
+    finish_reason: gen.finish_reason || null,
+    reproducibility: gen.reproducibility ||
+      { level: 'best_effort', deterministic_settings: false, notes: '' }
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -315,6 +373,7 @@ function verifyConsistency(m, n, oldRootStr, newRootStr, proofStrs) {
 module.exports = {
   AXR_VERSION,
   AXR_INPUT_KEY,
+  AXR_GEN_KEY,
   canonicalize,
   sha256,
   versionAtLeast,
@@ -325,6 +384,8 @@ module.exports = {
   uuid,
   customerRef,
   splitAxrInput,
+  splitAxrGen,
+  buildGeneration,
   // 0.3 Merkle / anchoring
   leafHash,
   nodeHash,

@@ -103,6 +103,12 @@ node axr-monitor.js compare monitor-A.json monitor-B.json
 
 What it catches: **EQUIVOCATION** (a different root at an already-witnessed tree size — the operator showed two different trees), **TRUNCATION** (the log shrank), **NON_APPEND_ONLY** (a consistency proof fails — history was rewritten), **ROOT_MISMATCH** (a signed STH whose root does not match the actual receipts), and **BAD_SIGNATURE**. This is what turns guarantees G5/G6 from potential into actual.
 
+### Generative (LLM) steps (Stage C)
+
+A generative node attaches a `__axr_gen` marker to its output alongside `__axr_input`, carrying the full evidence of the model call: model id/fingerprint, parameters, the ordered prompt, tool definitions, the completion, usage, and a `reproducibility` declaration. The 0.3 generator (`generateReceiptsV3`) turns this into a generative step receipt (`step.kind: "generative"`, a `generation` block, `io.decision: null`), and links the downstream deterministic decision to it via the `inputs` evidence graph — so a verifier can check *which* model output the decision consumed.
+
+A generative receipt is **evidence of an invocation, not a reproducible computation** (`reproducibility.level`). The verifier (check 8) enforces well-formedness; the whole pipeline — generator → anchoring sidecar → verifier → monitor — handles generative steps end-to-end (`axr-generative-test.js`).
+
 ---
 
 ## Integration into an n8n workflow
@@ -217,8 +223,8 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 
 | File | Description |
 |------|-------------|
-| `axr-core.js` | Shared library: canonicalization, SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree, inclusion/consistency proofs, version-aware signing, `chainHash` |
-| `axr-generator.js` | Receipt generator logic, testable outside n8n |
+| `axr-core.js` | Shared library: canonicalization, SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree, inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration` |
+| `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
 | `axr-verify.js` | Standalone verifier: `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]` |
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back |
@@ -226,6 +232,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
 | `axr-anchor-test.js` | **0.3:** anchoring sidecar end-to-end test (idempotency, incremental anchoring, consistency) |
 | `axr-monitor-test.js` | **0.3:** monitor test (equivocation, truncation, root-mismatch, bad signature, journal compare) |
+| `axr-generative-test.js` | **0.3:** generative-step end-to-end test (generator → sidecar → verifier → monitor) |
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity) |
 

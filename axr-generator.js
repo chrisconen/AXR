@@ -205,4 +205,158 @@ function buildDecisionSummary(brain, finalStatus) {
   return `Elutasitva: ${brain.status}, ok: ${brain.reason}, zona: ${brain.cluster_id || 'ismeretlen'}`;
 }
 
-module.exports = { generateReceipts, STEP_NODES };
+module.exports = { generateReceipts, STEP_NODES, generateReceiptsV3 };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.3 generator (Stage C) - marker-vezerelt, generativ lepeseket is kezel
+// ═══════════════════════════════════════════════════════════════════════════════
+// A 0.2 generator a pilot hat node-jara van huzalozva. A 0.3 generator ezzel
+// szemben ALTALANOS: a lepeseket a hivo adja meg (ctx.steps), es minden lepesnel
+// a node kimenetebol levalasztott markerek dontik el a tipust:
+//   - __axr_gen jelen van  -> GENERATIV lepes (kind: 'generative', generation blokk,
+//                             model a markerbol, io.decision = null)
+//   - csak __axr_input van -> determinisztikus lepes (mint a 0.2-ben)
+//
+// Az evidence-graph (spec 3.4): egy lepes def.inputsFrom-ja node-neveket sorol,
+// amiket a generator a mar megepitett lepesek receipt_id-jaira old fel, es az
+// io melletti 'inputs' tombbe ir. Igy a verifier (9. ellenorzes) checkelni tudja,
+// hogy "a Brain ezt a modell-kimenetet kapta".
+//
+// 0.3 mezok: axr_version '0.3', step.kind, inputs, anchor_ref:null,
+// actor.identity_ref. A lancolas a kozos chainHash-sel tortenik (anchor_ref nelkul),
+// hogy a kesobbi horgonyzas ne torje el a lancot.
+//
+// ctx:
+//   steps        : [ { node, type, logic_version?, inputsFrom?:[nodeNames],
+//                      decision?:bool, extractDecision?:fn, inputSummary?:fn } ]
+//   get(nodeName): a node nyers kimenete (markerekkel), vagy null ha nem futott
+//   rawWebhookBody, prevWorkflowHash, privateKeyPem
+//   workflow {workflow_id, workflow_version, webhook_path}, actor {...}
+//   triggerTimestamp?, completionTimestamp?, stepTimestamp?(node)->ts
+//   finalStatusOverride?, decisionSummary?
+function generateReceiptsV3(ctx) {
+  const V = '0.3';
+  const workflowReceiptId = axr.uuid();
+  const triggerTs = ctx.triggerTimestamp || new Date().toISOString();
+  const warnings = [];
+  const stepReceipts = [];
+  const nodeToReceiptId = {};
+  let prevStepHash = null;
+  let sequence = 0;
+  let decisionForWorkflow = null;
+
+  for (const def of (ctx.steps || [])) {
+    const rawOutput = ctx.get(def.node);
+    if (rawOutput === null || rawOutput === undefined) continue; // nem futott -> kimarad
+    sequence += 1;
+
+    // mindket marker levalasztasa: a tiszta output egyiket se tartalmazza
+    const afterInput = axr.splitAxrInput(rawOutput);
+    const afterGen = axr.splitAxrGen(afterInput.output);
+    const stepInput = afterInput.input;
+    const gen = afterGen.gen;
+    const cleanOutput = afterGen.output;
+    const generative = gen !== undefined;
+
+    let inputHash;
+    if (stepInput === undefined) {
+      inputHash = null;
+      warnings.push(`${def.node}: nincs __axr_input marker - input_hash null`);
+    } else {
+      inputHash = axr.sha256(stepInput);
+    }
+
+    // inputs evidence-graph: node-nevek -> mar megepitett lepesek receipt_id-jai
+    const inputs = [];
+    for (const src of (def.inputsFrom || [])) {
+      if (nodeToReceiptId[src]) inputs.push(nodeToReceiptId[src]);
+      else warnings.push(`${def.node}: inputsFrom "${src}" nincs tanusitott (korabbi) lepeskent`);
+    }
+
+    let decision = null;
+    if (!generative && def.decision) {
+      const co = Array.isArray(cleanOutput) ? (cleanOutput[0] || {}) : cleanOutput;
+      decision = def.extractDecision ? def.extractDecision(co) : co;
+      decisionForWorkflow = decision;
+    }
+
+    const stepBody = {
+      axr_version: V,
+      receipt_type: 'step',
+      receipt_id: axr.uuid(),
+      workflow_receipt_id: workflowReceiptId,
+      sequence: sequence,
+      timestamp: ctx.stepTimestamp ? ctx.stepTimestamp(def.node) : triggerTs,
+      step: {
+        node_name: def.node,
+        node_type: def.type,
+        logic_version: def.logic_version || null,
+        kind: generative ? 'generative' : 'deterministic',
+        deterministic: !generative,
+        model: generative ? (gen.model || null) : null
+      },
+      io: {
+        input_hash: inputHash,
+        output_hash: axr.sha256(cleanOutput),
+        input_summary: def.inputSummary ? def.inputSummary(cleanOutput) : {},
+        decision: decision
+      },
+      inputs: inputs,
+      approval: null,
+      previous_receipt_hash: prevStepHash,
+      anchor_ref: null
+    };
+    if (generative) stepBody.generation = axr.buildGeneration(gen);
+
+    const signature = axr.signReceipt(stepBody, ctx.privateKeyPem);
+    const stepReceipt = { ...stepBody, signature };
+    prevStepHash = axr.chainHash(stepReceipt);
+    nodeToReceiptId[def.node] = stepReceipt.receipt_id;
+    stepReceipts.push(stepReceipt);
+  }
+
+  const finalStatus = ctx.finalStatusOverride ||
+    (decisionForWorkflow && decisionForWorkflow.status) || 'UNKNOWN';
+
+  const workflowBody = {
+    axr_version: V,
+    receipt_type: 'workflow',
+    receipt_id: workflowReceiptId,
+    workflow: {
+      workflow_id: (ctx.workflow && ctx.workflow.workflow_id) || 'workflow',
+      workflow_version: (ctx.workflow && ctx.workflow.workflow_version) || null,
+      webhook_path: (ctx.workflow && ctx.workflow.webhook_path) || null,
+      trigger_timestamp: triggerTs,
+      completion_timestamp: ctx.completionTimestamp || new Date().toISOString()
+    },
+    actor: {
+      agent_id: (ctx.actor && ctx.actor.agent_id) || 'agent',
+      agent_type: (ctx.actor && ctx.actor.agent_type) || 'n8n-workflow',
+      operator: (ctx.actor && ctx.actor.operator) || null,
+      on_behalf_of: (ctx.actor && ctx.actor.on_behalf_of) || null,
+      identity_ref: (ctx.actor && ctx.actor.identity_ref) || null
+    },
+    request: {
+      input_hash: axr.sha256(ctx.rawWebhookBody),
+      customer_ref: ctx.rawWebhookBody
+        ? axr.customerRef(ctx.rawWebhookBody.name, ctx.rawWebhookBody.email, ctx.rawWebhookBody.phone)
+        : null
+    },
+    outcome: {
+      final_status: finalStatus,
+      available: !!(decisionForWorkflow && decisionForWorkflow.available),
+      decision_summary: ctx.decisionSummary || finalStatus
+    },
+    step_chain: stepReceipts.map(r => r.receipt_id),
+    chain_root_hash: prevStepHash,
+    approval: null,
+    previous_receipt_hash: ctx.prevWorkflowHash || null,
+    anchor_ref: null
+  };
+
+  const workflowSignature = axr.signReceipt(workflowBody, ctx.privateKeyPem);
+  const workflowReceipt = { ...workflowBody, signature: workflowSignature };
+  const workflowReceiptHash = axr.chainHash(workflowReceipt);
+
+  return { workflowReceipt, workflowReceiptHash, stepReceipts, warnings };
+}

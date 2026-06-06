@@ -1078,9 +1078,16 @@ AXR 0.3 is a **draft specification** with a staged implementation plan:
   root digest to public Bitcoin calendars and degrades to `pending_offline`
   without network. End-to-end tested (`axr-anchor-test.js`): idempotency,
   incremental anchoring, and a holding consistency proof across two STHs.
-- **Stage C (generative step). PENDING.** Lands when the pilot workflow gains its
-  first LLM node (an intent classifier is the likely candidate), exercising §5
-  end-to-end. The schema and verifier checks (§5, check 8) are already in place.
+- **Stage C (generative step). IMPLEMENTED (reference).** The marker-driven 0.3
+  generator (`generateReceiptsV3`) produces a generative step receipt from a node
+  carrying a `__axr_gen` marker (model, params, prompt/tool/completion, usage,
+  reproducibility), sets `io.decision: null`, and links the downstream
+  deterministic decision via the `inputs` evidence graph. End-to-end tested
+  (`axr-generative-test.js`): generator → anchoring sidecar → verifier → monitor,
+  plus tamper-fails on completion-hash and a broken evidence graph. What remains
+  for production is wiring a live LLM node and its `__axr_gen` marker into the
+  pilot workflow; the protocol path is proven against a realistic intent-
+  classifier + Brain example.
 - **Stage D (monitor). IMPLEMENTED (reference).** A minimal independent monitor
   (`axr-monitor.js`) keeps a retained journal of witnessed STHs and detects
   equivocation, truncation, non-append-only rewrites, root mismatches, and bad
@@ -1090,12 +1097,12 @@ AXR 0.3 is a **draft specification** with a staged implementation plan:
   implementation makes that deployment cheap, but does not by itself create the
   independent party.
 
-The cryptographic and protocol layers (A, B, D) are implemented and tested
-offline; what remains for full production assurance is (C) a live generative
-step and, crucially, (D-deployment) an *independent* operator of the monitor.
-Until an independent monitor actually runs, AXR 0.3's G5/G6 guarantees are
-realisable but not yet realised — stated honestly rather than implied to be
-finished.
+The cryptographic and protocol layers (A, B, C, D) are implemented and tested
+offline; what remains for full production assurance is wiring a live LLM node's
+`__axr_gen` marker into the pilot workflow and, crucially, (D-deployment) an
+*independent* operator of the monitor. Until an independent monitor actually
+runs, AXR 0.3's G5/G6 guarantees are realisable but not yet realised — stated
+honestly rather than implied to be finished.
 
 ---
 
