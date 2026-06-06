@@ -61,6 +61,35 @@ Across runs on one agent, workflow receipts chain to each other. Deletion of any
 
 ---
 
+## What 0.3 adds over 0.2 (in progress)
+
+0.2 proved a record was unmodified *since signing* — but the operator held the only key and the only log, so nothing stopped silent rewriting, backdating, or keeping two divergent logs. 0.3 introduces a party the operator does not control, turning **tamper-evident** into **tamper-detectable**. The honest analogy is Certificate Transparency, not self-signed HTTPS.
+
+**Independent anchoring.** Receipt hashes are batched into an RFC 6962 Merkle tree (byte-compatible with CT/Rekor tooling). At each interval a **Signed Tree Head** is emitted and its root committed to external, append-only backends (OpenTimestamps/Bitcoin, Rekor, RFC 3161). Each receipt gets an **inclusion proof**; successive tree heads are linked by **consistency proofs** that a monitor can check to detect rewriting or forking.
+
+**Generative-step receipts.** A receipt shape for LLM steps that captures model id/fingerprint, parameters, prompt/tool/completion hashes, usage and finish reason — with an explicit *evidentiary-capture-vs-reproducibility* rule, so it is never read as a claim of reproducible AI decisions.
+
+**Out-of-band sidecar.** Anchoring runs *outside* n8n (`axr-anchor.js`), reading the same append-only `receipts.jsonl`. The booking hot path gains zero latency and zero new dependency; a backend outage degrades a receipt to "pending", never failing it. The only mutation to `receipts.jsonl` is the signature-neutral `anchor_ref` write-back.
+
+The full draft lives in `AXR-SPEC-0.3.md`, including an explicit threat model (guarantees G1–G7, non-guarantees N1–N5) and a prior-art map (CT, Sigstore, in-toto/SLSA, C2PA, RFC 3161, OpenTimestamps).
+
+### Anchoring usage (Stage B)
+
+```bash
+# local backend (deterministic, offline - for development/CI)
+node axr-anchor.js receipts.jsonl private-key.pem --backend local
+
+# OpenTimestamps (Bitcoin anchor; degrades to pending_offline without network)
+node axr-anchor.js receipts.jsonl private-key.pem --backend opentimestamps
+
+# verify, now with the anchoring layer
+node axr-verify.js receipts.jsonl public-key.pem sth.jsonl anchors.jsonl
+```
+
+The verifier branches on `axr_version`: 0.1/0.2 chains stay valid, 0.3 chains additionally get checks 8–12 (generative well-formedness, evidence-graph integrity, inclusion proofs, STH chain + consistency, offline anchor cross-check).
+
+---
+
 ## Integration into an n8n workflow
 
 The receipt generator is a single n8n **Code node** placed at the end of the workflow, before the response nodes. It reads the outputs of the decision-relevant nodes and generates all receipts in one pass.
@@ -173,11 +202,15 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 
 | File | Description |
 |------|-------------|
-| `axr-core.js` | Shared library: canonicalization, SHA-256, Ed25519 sign/verify, `splitAxrInput` |
+| `axr-core.js` | Shared library: canonicalization, SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree, inclusion/consistency proofs, version-aware signing, `chainHash` |
 | `axr-generator.js` | Receipt generator logic, testable outside n8n |
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
-| `axr-verify.js` | Standalone verifier: `node axr-verify.js receipts.jsonl public-key.pem` |
-| `AXR-SPEC-0_2.md` | Full protocol specification |
+| `axr-verify.js` | Standalone verifier: `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]` |
+| `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back |
+| `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
+| `axr-anchor-test.js` | **0.3:** anchoring sidecar end-to-end test (idempotency, incremental anchoring, consistency) |
+| `AXR-SPEC-0.2.md` | 0.2 protocol specification |
+| `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity) |
 
 ---
 
