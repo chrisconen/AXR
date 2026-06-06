@@ -66,33 +66,42 @@ function versionAtLeast(v, min) {
   return true;
 }
 
-// ── Alairhato resz - verzio-fuggo mezo-kihagyas (0.3) ───────────────────────────
+// ── Volatilis (alairason kivuli) mezok ─────────────────────────────────────────
+// Ket mezo iródik/valtozik a receipt ELSO alairasa UTAN, ezert sem az alairast,
+// sem a lanc-/level-hasht nem fedhetik - kulonben az utolagos irasuk eltorne a
+// mar kiadott bizonyitekokat:
+//   anchor_ref         - a horgonyzas keson, kotegelve tolti ki (0.3, spec 4.1)
+//   redactable         - a torolheto mezok CLEARTEXT reszlete; a torlesnek (GDPR
+//                        Art. 17) nem szabad eltornie az alairast/lancot (0.4).
+//                        A commitment (redactable_root) ELLENBEN alairt marad.
+// Mindkettot jelenlet-alapon toroljuk: 0.1/0.2 receiptnel egyik sincs -> no-op.
+function _stripVolatile(clone) {
+  delete clone.anchor_ref;
+  delete clone.redactable;
+  return clone;
+}
+
+// ── Alairhato resz - verzio-fuggo mezo-kihagyas ─────────────────────────────────
 // 0.1/0.2: az alairas a receiptet a 'signature' mezo NELKUL fedi.
-// 0.3:     a 'signature' ES az 'anchor_ref' is kimarad. Az anchor_ref az alairas
-//          UTAN irodik a receiptbe (a horgonyzas keson, kotegelve tortenik), ezert
-//          nem szabad, hogy visszamenoleg ervenytelenitse az alairast (spec 4.1).
-//          0.1/0.2 receiptnel nincs anchor_ref, igy a torles no-op - visszafele
-//          kompatibilis.
+// 0.3:     a 'signature' ES az 'anchor_ref' is kimarad (anchor_ref az alairas utan
+//          irodik, spec 4.1).
+// 0.4:     ezen felul a 'redactable' detail is kimarad (a redactable_root marad
+//          alairva). Igy egy mezo cleartextjenek torlese nem rontja el az alairast.
 function signablePart(receipt) {
   const clone = { ...receipt };
   delete clone.signature;
-  if (versionAtLeast(receipt.axr_version, '0.3')) {
-    delete clone.anchor_ref;
-  }
+  if (versionAtLeast(receipt.axr_version, '0.3')) delete clone.anchor_ref;
+  if ('redactable' in clone) delete clone.redactable;
   return clone;
 }
 
 // ── Lanc-hash (previous_receipt_hash / chain_root_hash / previous_sth_hash) ─────
-// A lancolasi hash a receiptet az anchor_ref NELKUL fedi - akkor is, ha az
-// anchor_ref jelen van null-kent. Igy a hash stabil marad, amikor a horgonyzas
-// kesobb kitolti az anchor_ref-et. Egy helyen el, hogy a generator (lancolaskor)
-// es a verifier garantaltan ugyanazt szamolja. 0.1/0.2-nel nincs anchor_ref kulcs,
-// ezert ez no-op - visszafele kompatibilis.
+// A lancolasi hash a volatilis mezok (anchor_ref, redactable) NELKUL szamol, hogy
+// a horgonyzas illetve a kesobbi redakcio ne torje el a lancot. Egy helyen el,
+// hogy a generator es a verifier garantaltan ugyanazt szamolja.
 function chainHash(receipt) {
-  if (receipt && typeof receipt === 'object' && 'anchor_ref' in receipt) {
-    const clone = { ...receipt };
-    delete clone.anchor_ref;
-    return sha256(clone);
+  if (receipt && typeof receipt === 'object' && ('anchor_ref' in receipt || 'redactable' in receipt)) {
+    return sha256(_stripVolatile({ ...receipt }));
   }
   return sha256(receipt);
 }
@@ -236,11 +245,13 @@ function _fromHashStr(s) {
 }
 
 // ── Level- es csomo-hash (RFC 6962 domain separation) ──────────────────────────
-// A level bemenete a TELJES alairt receipt kanonikus bajtjai, az anchor_ref
-// NELKUL (az anchor_ref a level kepzese utan irodik - spec 6.2).
+// A level bemenete a TELJES alairt receipt kanonikus bajtjai, a volatilis mezok
+// (anchor_ref, redactable detail) NELKUL - igy a horgonyzas es a kesobbi redakcio
+// sem valtoztatja meg a level-hasht, tehat a mar kiadott inclusion proof tovabb el.
 function leafInputBytes(receipt) {
   const clone = { ...receipt };
   delete clone.anchor_ref;
+  delete clone.redactable;
   return Buffer.from(canonicalize(clone), 'utf8');
 }
 function leafHash(receipt) {
@@ -370,6 +381,77 @@ function verifyConsistency(m, n, oldRootStr, newRootStr, proofStrs) {
   return p === proofStrs.length && oldHash === oldRootStr && newHash === newRootStr;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.4 - Redactable mezok (GDPR Art. 17 torles vs append-only feloldasa)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Az erzekeny (potencialisan szemelyes adatot tartalmazo) mezoket - tipikusan a
+// generativ prompt/completion cleartext - NEM kozvetlenul irjuk ala, hanem egy
+// mezo-szintu Merkle-fan keresztul commitoljuk. A receipt alairt resze csak a fa
+// GYOKERET (redactable_root) tartalmazza; a cleartext reszlet (redactable.fields)
+// kimarad az alairasbol, a lanc-hashbol es a level-hashbol (lasd _stripVolatile).
+//
+// Kovetkezmeny: egy mezo cleartextje KESOBB TOROLHETO (a value+salt eldobasaval,
+// a leaf_hash megtartasaval) anelkul, hogy az alairas, a lanc vagy a mar
+// lehorgonyzott inclusion proof eltorne. A commitment (leaf_hash a gyoker alatt)
+// megmarad, de a tartalom valoban eltunik.
+//
+// Minden mezo SOZOTT: leaf = sha256({p:path, s:salt, v:value}). A so miatt egy
+// torolt mezo leaf_hash-ebol NEM lehet brute-force-szal visszafejteni a rovid
+// erteket - ez a kulcs elony a sima (sotlan) tartalom-hashhez kepest.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Egy mezo sozott level-hash-e.
+function redactableLeaf(fieldPath, salt, value) {
+  return sha256({ p: fieldPath, s: salt, v: value });
+}
+
+// Redactable blokk epitese mezokbol. fields: [{ path, value }]
+// -> { redactable_root, redactable: { fields: [{ path, salt, value, leaf_hash }] } }
+function buildRedactable(fields) {
+  const out = (fields || []).map(f => {
+    const salt = crypto.randomBytes(16).toString('base64');
+    return { path: f.path, salt, value: f.value, leaf_hash: redactableLeaf(f.path, salt, f.value) };
+  });
+  const root = out.length ? merkleRootFromLeaves(out.map(f => f.leaf_hash)) : sha256(null);
+  return { redactable_root: root, redactable: { fields: out } };
+}
+
+// Egy mezo cleartextjenek torlese: value+salt eldobasa, leaf_hash megtartasa.
+// A receipt alairasa/lanca/level-hashe valtozatlan marad (a detail kimarad ezekbol).
+function redactField(receipt, fieldPath) {
+  const clone = JSON.parse(JSON.stringify(receipt));
+  if (!clone.redactable || !Array.isArray(clone.redactable.fields)) return clone;
+  for (const f of clone.redactable.fields) {
+    if (f.path === fieldPath) { delete f.value; delete f.salt; f.redacted = true; }
+  }
+  return clone;
+}
+
+// Redactable commitment ellenorzese.
+//   - a mezok leaf_hash-eibol ujraszamolt gyoker == redactable_root (ez koti az
+//     alairashoz, mert a redactable_root alairt)
+//   - minden JELENLEVO (nem torolt) mezo erteke egyezik a sajat sozott leaf_hash-evel
+//   - torolt mezonel a commitment all, cleartext nelkul
+// -> { ok, problems, applicable }
+function verifyRedactable(receipt) {
+  const problems = [];
+  if (!receipt || !('redactable_root' in receipt)) return { ok: true, problems, applicable: false };
+  const block = receipt.redactable;
+  if (!block || !Array.isArray(block.fields)) {
+    return { ok: true, problems: ['redactable_root jelen van, de a detail hianyzik - a commitment lokalisan nem ellenorizheto'],
+             applicable: true, detailAbsent: true };
+  }
+  const root = block.fields.length ? merkleRootFromLeaves(block.fields.map(f => f.leaf_hash)) : sha256(null);
+  if (root !== receipt.redactable_root)
+    problems.push('a mezok leaf_hash-eibol szamolt gyoker nem egyezik a redactable_root-tal');
+  for (const f of block.fields) {
+    if (f.redacted || f.value === undefined) continue;
+    if (redactableLeaf(f.path, f.salt, f.value) !== f.leaf_hash)
+      problems.push(`mezo "${f.path}": az ertek nem egyezik a commitolt (sozott) leaf_hash-evel`);
+  }
+  return { ok: problems.length === 0, problems, applicable: true };
+}
+
 module.exports = {
   AXR_VERSION,
   AXR_INPUT_KEY,
@@ -396,5 +478,10 @@ module.exports = {
   rootFromInclusionProof,
   verifyInclusion,
   consistencyProof,
-  verifyConsistency
+  verifyConsistency,
+  // 0.4 redactable mezok
+  redactableLeaf,
+  buildRedactable,
+  redactField,
+  verifyRedactable
 };

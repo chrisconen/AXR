@@ -109,6 +109,29 @@ A generative node attaches a `__axr_gen` marker to its output alongside `__axr_i
 
 A generative receipt is **evidence of an invocation, not a reproducible computation** (`reproducibility.level`). The verifier (check 8) enforces well-formedness; the whole pipeline — generator → anchoring sidecar → verifier → monitor — handles generative steps end-to-end (`axr-generative-test.js`).
 
+### Redactable receipts (0.4 prototype) — GDPR erasure vs append-only
+
+Append-only logs and the GDPR right to erasure (Art. 17) appear to conflict: how do you delete personal data from a record whose whole point is that it cannot change? AXR 0.4 resolves this with **field-level salted Merkle commitments**.
+
+Sensitive fields (typically the generative `prompt` / `completion` cleartext) are not signed directly — they are committed through a field-level Merkle tree whose root (`redactable_root`) is signed. The cleartext detail (`redactable`) is excluded from the signature, the chain hash, and the leaf hash. Consequently a field's cleartext can be **erased later** (drop the value and its salt, keep the leaf hash) and:
+
+- the signature stays valid,
+- the chain hash is unchanged,
+- the already-anchored **leaf hash is unchanged — the Bitcoin/OTS inclusion proof still holds**,
+- the commitment still verifies (check 13),
+- but the personal data is genuinely gone, and the per-field **salt** makes a redacted field's hash non-brute-forceable.
+
+```js
+const { redactable_root, redactable } = core.buildRedactable([
+  { path: 'generation.prompt', value: promptMessages }
+]);
+// ... sign the receipt (redactable detail is excluded from the signature) ...
+const erased = core.redactField(receipt, 'generation.prompt'); // GDPR erasure
+// erased still verifies; leafHash(erased) === leafHash(receipt)
+```
+
+Demonstrated end-to-end in `axr-redactable-test.js`: build → anchor → erase the prompt → the log (with anchors) still verifies, and the cleartext PII is gone. This is the buildable answer to the prompt-retention/GDPR weakness; selective disclosure (SD-JWT/BBS+) and ZKPs are the next layer beyond it.
+
 ---
 
 ## Integration into an n8n workflow
@@ -223,7 +246,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 
 | File | Description |
 |------|-------------|
-| `axr-core.js` | Shared library: canonicalization, SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree, inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration` |
+| `axr-core.js` | Shared library: canonicalization, SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree, inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`) |
 | `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
 | `axr-verify.js` | Standalone verifier: `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]` |
@@ -233,6 +256,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 | `axr-anchor-test.js` | **0.3:** anchoring sidecar end-to-end test (idempotency, incremental anchoring, consistency) |
 | `axr-monitor-test.js` | **0.3:** monitor test (equivocation, truncation, root-mismatch, bad signature, journal compare) |
 | `axr-generative-test.js` | **0.3:** generative-step end-to-end test (generator → sidecar → verifier → monitor) |
+| `axr-redactable-test.js` | **0.4:** redactable-receipts test (build → anchor → GDPR erase → still verifies; tamper-fails) |
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity) |
 

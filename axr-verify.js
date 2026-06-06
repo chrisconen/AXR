@@ -19,6 +19,8 @@
 //   10. inclusion proof: minden horgonyzott receipt benne van-e a hivatkozott faban
 //   11. STH-lanc + consistency proof: az ujabb fa az append-only bovitese a reginek
 //   12. anchor cross-check (offline: explicit ANCHOR_UNVERIFIED jelzes)
+//   13. redactable commitment integritas (0.4): a mezo-fa gyokere == redactable_root,
+//       a jelenlevo mezok a sozott leaf_hash-ukkel; torolt mezo cleartext nelkul is ervenyes
 //
 // VERZIO-KEZELES:
 //   A verifier a receipt sajat axr_version mezoje szerint agazik el. A regi 0.1/0.2
@@ -254,6 +256,25 @@ for (const s of steps) {
   }
 }
 
+// ── 13. Redactable commitment integritas (0.4) ─────────────────────────────────
+// Ahol van redactable_root, ott a mezo-fa gyokere egyezzen a commitmenttel, es
+// minden JELENLEVO mezo erteke a sajat sozott leaf_hash-evel. A torolt mezok
+// cleartext nelkul is ervenyesek - a commitment all, az alairas ep marad.
+let redactableCount = 0, redactedFieldCount = 0;
+for (const r of receipts) {
+  if (!('redactable_root' in r)) continue;
+  redactableCount++;
+  const res = core.verifyRedactable(r);
+  if (res.detailAbsent) {
+    notice(`receipt ${r.receipt_id}: redactable_root jelen, de a detail hianyzik - a commitment alairt, de lokalisan nem ellenorizheto`);
+  }
+  for (const p of res.problems) {
+    if (!res.detailAbsent) problem(`receipt ${r.receipt_id}: redactable - ${p}`);
+  }
+  const fields = (r.redactable && Array.isArray(r.redactable.fields)) ? r.redactable.fields : [];
+  redactedFieldCount += fields.filter(f => f.redacted || f.value === undefined).length;
+}
+
 // ── STH / anchor fajlok betoltese (opcionalis) ─────────────────────────────────
 function loadJsonl(path, label) {
   if (!path) return null;
@@ -338,6 +359,9 @@ const verStr = Object.keys(versionCounts).sort()
 console.log(`Verziok:    ${verStr}`);
 if (sths.length || anchored || pending) {
   console.log(`Horgonyzas: ${anchored} horgonyzott, ${pending} fuggoben  |  ${sths.length} STH, ${anchors.length} anchor-rekord`);
+}
+if (redactableCount) {
+  console.log(`Redactable: ${redactableCount} receipt commitmenttel, ${redactedFieldCount} torolt mezo (a commitment es az alairas ep)`);
 }
 console.log('-'.repeat(72));
 for (const wf of workflows) {
