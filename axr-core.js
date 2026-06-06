@@ -45,11 +45,57 @@ function sha256(value) {
   return 'sha256:' + crypto.createHash('sha256').update(input, 'utf8').digest('hex');
 }
 
+// ── Verzio-osszehasonlitas ──────────────────────────────────────────────────────
+// "0.3" >= "0.2" -> true. Egyszeru major.minor parse, elegendo amig a verzio
+// "X.Y" formatumu. Kozos a verifierrel, hogy a ket oldal ne terjen el.
+function versionAtLeast(v, min) {
+  if (!v) return false;
+  const pa = String(v).split('.').map(Number);
+  const pb = String(min).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const a = pa[i] || 0, b = pb[i] || 0;
+    if (a > b) return true;
+    if (a < b) return false;
+  }
+  return true;
+}
+
+// ── Alairhato resz - verzio-fuggo mezo-kihagyas (0.3) ───────────────────────────
+// 0.1/0.2: az alairas a receiptet a 'signature' mezo NELKUL fedi.
+// 0.3:     a 'signature' ES az 'anchor_ref' is kimarad. Az anchor_ref az alairas
+//          UTAN irodik a receiptbe (a horgonyzas keson, kotegelve tortenik), ezert
+//          nem szabad, hogy visszamenoleg ervenytelenitse az alairast (spec 4.1).
+//          0.1/0.2 receiptnel nincs anchor_ref, igy a torles no-op - visszafele
+//          kompatibilis.
+function signablePart(receipt) {
+  const clone = { ...receipt };
+  delete clone.signature;
+  if (versionAtLeast(receipt.axr_version, '0.3')) {
+    delete clone.anchor_ref;
+  }
+  return clone;
+}
+
+// ── Lanc-hash (previous_receipt_hash / chain_root_hash / previous_sth_hash) ─────
+// A lancolasi hash a receiptet az anchor_ref NELKUL fedi - akkor is, ha az
+// anchor_ref jelen van null-kent. Igy a hash stabil marad, amikor a horgonyzas
+// kesobb kitolti az anchor_ref-et. Egy helyen el, hogy a generator (lancolaskor)
+// es a verifier garantaltan ugyanazt szamolja. 0.1/0.2-nel nincs anchor_ref kulcs,
+// ezert ez no-op - visszafele kompatibilis.
+function chainHash(receipt) {
+  if (receipt && typeof receipt === 'object' && 'anchor_ref' in receipt) {
+    const clone = { ...receipt };
+    delete clone.anchor_ref;
+    return sha256(clone);
+  }
+  return sha256(receipt);
+}
+
 // ── Ed25519 alairas ────────────────────────────────────────────────────────────
-// A receipt objektumot a 'signature' mezo NELKUL irjuk ala, kanonikus formaban.
-function signReceipt(receiptWithoutSignature, privateKeyPem) {
+// A receiptet kanonikus formaban, a verziohoz tartozo mezo-kihagyassal irjuk ala.
+function signReceipt(receipt, privateKeyPem) {
   const privateKey = crypto.createPrivateKey(privateKeyPem);
-  const message = Buffer.from(canonicalize(receiptWithoutSignature), 'utf8');
+  const message = Buffer.from(canonicalize(signablePart(receipt)), 'utf8');
   const signature = crypto.sign(null, message, privateKey);
   return signature.toString('base64');
 }
@@ -57,9 +103,9 @@ function signReceipt(receiptWithoutSignature, privateKeyPem) {
 // ── Ed25519 alairas ellenorzes ─────────────────────────────────────────────────
 function verifyReceipt(receipt, publicKeyPem) {
   const publicKey = crypto.createPublicKey(publicKeyPem);
-  const { signature, ...rest } = receipt;
-  const message = Buffer.from(canonicalize(rest), 'utf8');
-  return crypto.verify(null, message, publicKey, Buffer.from(signature, 'base64'));
+  if (!receipt.signature) return false;
+  const message = Buffer.from(canonicalize(signablePart(receipt)), 'utf8');
+  return crypto.verify(null, message, publicKey, Buffer.from(receipt.signature, 'base64'));
 }
 
 // ── UUID v4 ────────────────────────────────────────────────────────────────────
@@ -106,14 +152,188 @@ function splitAxrInput(nodeOutput) {
   return { input: undefined, output: nodeOutput };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.3 - Merkle-fa es kulso horgonyzas (RFC 6962 / Certificate Transparency)
+// ═══════════════════════════════════════════════════════════════════════════════
+// A 0.3 a receipt-hasheket egy RFC 6962 stilusu Merkle-faba kotegeli. A fa
+// gyokeret idoszakosan alairjuk (Signed Tree Head) es egy fuggetlen, append-only
+// szolgaltatasban (Rekor / RFC 3161 TSA / OpenTimestamps) horgonyozzuk le. Minden
+// receipt kap egy inclusion proof-ot, az egymast koveto fa-fejek kozott pedig
+// consistency proof bizonyitja, hogy az ujabb fa a regi append-only bovitese.
+//
+// A hashing PONTOSAN az RFC 6962 szabalyait koveti (domain separation: 0x00 a
+// leveleknel, 0x01 a belso csomoknal; a split a legnagyobb 2-hatvany n alatt),
+// igy a fa byte-kompatibilis a letezo CT/Rekor verifikalokkal.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const LEAF_PREFIX = Buffer.from([0x00]);
+const NODE_PREFIX = Buffer.from([0x01]);
+
+// "sha256:hex" <-> Buffer konverziok. A receiptekben minden hash string-kent el.
+function _sha256Bytes(buf) { return crypto.createHash('sha256').update(buf).digest(); }
+function _toHashStr(buf) { return 'sha256:' + buf.toString('hex'); }
+function _fromHashStr(s) {
+  if (Buffer.isBuffer(s)) return s;
+  return Buffer.from(String(s).replace(/^sha256:/, ''), 'hex');
+}
+
+// ── Level- es csomo-hash (RFC 6962 domain separation) ──────────────────────────
+// A level bemenete a TELJES alairt receipt kanonikus bajtjai, az anchor_ref
+// NELKUL (az anchor_ref a level kepzese utan irodik - spec 6.2).
+function leafInputBytes(receipt) {
+  const clone = { ...receipt };
+  delete clone.anchor_ref;
+  return Buffer.from(canonicalize(clone), 'utf8');
+}
+function leafHash(receipt) {
+  return _toHashStr(_sha256Bytes(Buffer.concat([LEAF_PREFIX, leafInputBytes(receipt)])));
+}
+function nodeHash(left, right) {
+  return _toHashStr(_sha256Bytes(Buffer.concat([NODE_PREFIX, _fromHashStr(left), _fromHashStr(right)])));
+}
+
+// A legnagyobb 2-hatvany, ami szigoruan kisebb n-nel (RFC 6962 split pont).
+function largestPowerOfTwoLessThan(n) {
+  let k = 1;
+  while (k * 2 < n) k *= 2;
+  return k;
+}
+
+// ── Merkle Tree Hash (RFC 6962) egy level-hash tomb felett ─────────────────────
+// Bemenet: level-hash string-ek tombje. n==1 -> a level-hash maga a gyoker.
+function _mth(leafHashes) {
+  const n = leafHashes.length;
+  if (n === 0) return _toHashStr(_sha256Bytes(Buffer.alloc(0)));
+  if (n === 1) return leafHashes[0];
+  const k = largestPowerOfTwoLessThan(n);
+  return nodeHash(_mth(leafHashes.slice(0, k)), _mth(leafHashes.slice(k)));
+}
+
+// Gyoker egy receipt-tomb felett (a leveleket maga szamolja).
+function merkleRoot(receipts) {
+  return _mth(receipts.map(leafHash));
+}
+// Gyoker mar kiszamolt level-hash-ek felett.
+function merkleRootFromLeaves(leafHashes) {
+  return _mth(leafHashes.slice());
+}
+
+// ── Inclusion proof generalas (RFC 6962 PATH) ──────────────────────────────────
+// Visszaadja a testver-hashek listajat a leveltol a gyokerig (string-tomb).
+function inclusionProof(index, leafHashes) {
+  function rec(i, leaves) {
+    const n = leaves.length;
+    if (n <= 1) return [];
+    const k = largestPowerOfTwoLessThan(n);
+    if (i < k) return rec(i, leaves.slice(0, k)).concat([_mth(leaves.slice(k))]);
+    return rec(i - k, leaves.slice(k)).concat([_mth(leaves.slice(0, k))]);
+  }
+  return rec(index, leafHashes.slice());
+}
+
+// ── Inclusion proof ellenorzes - gyoker visszaszamolasa (CT iterativ algoritmus)
+// Ezt barmely auditor lefuttathatja: level-hash + index + fa-meret + proof -> gyoker.
+function rootFromInclusionProof(leafHashStr, index, treeSize, proofStrs) {
+  if (index < 0 || index >= treeSize) throw new Error('index a fa hatarain kivul');
+  let fn = index, sn = treeSize - 1;
+  let r = leafHashStr;
+  for (const p of proofStrs) {
+    if (sn === 0) throw new Error('inclusion proof tul hosszu');
+    if ((fn & 1) === 1 || fn === sn) {
+      r = nodeHash(p, r);
+      if ((fn & 1) === 0) {
+        do { fn >>= 1; sn >>= 1; } while ((fn & 1) === 0 && fn !== 0);
+      }
+    } else {
+      r = nodeHash(r, p);
+    }
+    fn >>= 1; sn >>= 1;
+  }
+  if (sn !== 0) throw new Error('inclusion proof tul rovid');
+  return r;
+}
+function verifyInclusion(leafHashStr, index, treeSize, proofStrs, expectedRootStr) {
+  try {
+    return rootFromInclusionProof(leafHashStr, index, treeSize, proofStrs) === expectedRootStr;
+  } catch (e) { return false; }
+}
+
+// ── Consistency proof generalas (RFC 6962 SUBPROOF) ────────────────────────────
+// Bizonyitja, hogy az elso m level egy korabbi fa, amit az n-meretu fa
+// append-only modon bovit. Bemenet: level-hash tomb (n elem) + m.
+function consistencyProof(m, leafHashes) {
+  const n = leafHashes.length;
+  if (m <= 0 || m > n) throw new Error('ervenytelen m a consistency proof-hoz');
+  if (m === n) return [];
+  function sub(mm, leaves, onPath) {
+    const nn = leaves.length;
+    if (mm === nn) return onPath ? [] : [_mth(leaves)];
+    const k = largestPowerOfTwoLessThan(nn);
+    if (mm <= k) return sub(mm, leaves.slice(0, k), onPath).concat([_mth(leaves.slice(k))]);
+    return sub(mm - k, leaves.slice(k), false).concat([_mth(leaves.slice(0, k))]);
+  }
+  return sub(m, leafHashes.slice(), true);
+}
+
+// ── Consistency proof ellenorzes (CT iterativ algoritmus) ──────────────────────
+// Igaz, ha a regi (m-meretu, oldRoot) fa az uj (n-meretu, newRoot) fa prefixe.
+function verifyConsistency(m, n, oldRootStr, newRootStr, proofStrs) {
+  if (m < 0 || n < m) return false;
+  if (m === n) return proofStrs.length === 0 && oldRootStr === newRootStr;
+  if (m === 0) return proofStrs.length === 0;
+
+  let node = m - 1, lastNode = n - 1;
+  while (node & 1) { node >>= 1; lastNode >>= 1; }
+
+  let p = 0, oldHash, newHash;
+  if (node) {
+    if (p >= proofStrs.length) return false;
+    oldHash = newHash = proofStrs[p++];
+  } else {
+    oldHash = newHash = oldRootStr;
+  }
+  while (node) {
+    if (node & 1) {
+      if (p >= proofStrs.length) return false;
+      const h = proofStrs[p++];
+      oldHash = nodeHash(h, oldHash);
+      newHash = nodeHash(h, newHash);
+    } else if (node < lastNode) {
+      if (p >= proofStrs.length) return false;
+      newHash = nodeHash(newHash, proofStrs[p++]);
+    }
+    node >>= 1; lastNode >>= 1;
+  }
+  while (lastNode) {
+    if (p >= proofStrs.length) return false;
+    newHash = nodeHash(newHash, proofStrs[p++]);
+    lastNode >>= 1;
+  }
+  return p === proofStrs.length && oldHash === oldRootStr && newHash === newRootStr;
+}
+
 module.exports = {
   AXR_VERSION,
   AXR_INPUT_KEY,
   canonicalize,
   sha256,
+  versionAtLeast,
+  signablePart,
+  chainHash,
   signReceipt,
   verifyReceipt,
   uuid,
   customerRef,
-  splitAxrInput
+  splitAxrInput,
+  // 0.3 Merkle / anchoring
+  leafHash,
+  nodeHash,
+  largestPowerOfTwoLessThan,
+  merkleRoot,
+  merkleRootFromLeaves,
+  inclusionProof,
+  rootFromInclusionProof,
+  verifyInclusion,
+  consistencyProof,
+  verifyConsistency
 };

@@ -1,56 +1,69 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// AXR Verifier v0.2 - receipt-lanc integritas ellenorzes
+// AXR Verifier v0.3 - receipt-lanc integritas + kulso horgonyzas ellenorzes
 // ═══════════════════════════════════════════════════════════════════════════════
-// Hasznalat:  node axr-verify.js <receipts.jsonl> <public-key.pem>
+// Hasznalat:
+//   node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]
 //
-// Ellenoriz:
+// Ellenoriz (0.1/0.2 - valtozatlan):
 //   1. minden receipt alairasa ervenyes-e (ed25519)
 //   2. a step-lancok folytonosak-e minden workflow-n belul
 //   3. a chain_root_hash egyezik-e az utolso lepessel
 //   4. a step_chain ID-lista egyezik-e a tenyleges lepesekkel
 //   5. a workflow-receiptek osszelancoltak-e
 //   6. minden step-nek van-e letezo szulo workflow-receiptje
+//   7. (0.2) uniform input_hash detektalas a 0.2+ lancokon
 //
-// VERZIO-KEZELES (0.2):
-//   A verifier a receipt sajat axr_version mezoje szerint agazik el. A regi
-//   0.1 lancok TOVABBRA IS ERVENYESEK - a kriptografiai integritas (alairas,
-//   hash-lanc) verziotol fuggetlen. A kulonbseg az input_hash ELLENORZESEBEN
-//   van: 0.2-ben az input_hash a lepes tenyleges inputjabol szamol, ezert nem
-//   lehet trivialisan uniform a lanc menten - a verifier ezt a 0.2 lepeseknel
-//    extra ellenorzeskent jelzi (a regi 7.1 bug visszacsuszasanak detektalasa).
+// Ellenoriz (0.3 - uj):
+//   8.  generativ lepes jol-formaltsag (model, prompt/completion hash, decision=null)
+//   9.  evidence-graph integritas (inputs[] letezo, korabbi lepesre mutat)
+//   10. inclusion proof: minden horgonyzott receipt benne van-e a hivatkozott faban
+//   11. STH-lanc + consistency proof: az ujabb fa az append-only bovitese a reginek
+//   12. anchor cross-check (offline: explicit ANCHOR_UNVERIFIED jelzes)
 //
-// Nulla kulso fuggoseg - csak a Node beepitett crypto es fs modulja.
+// VERZIO-KEZELES:
+//   A verifier a receipt sajat axr_version mezoje szerint agazik el. A regi 0.1/0.2
+//   lancok TOVABBRA IS ERVENYESEK - az alairas es a hash-lanc verziotol fuggetlen.
+//   0.3-nal az alairas a 'signature' ES az 'anchor_ref' nelkul szamol (az anchor_ref
+//   az alairas utan irodik), es a lanc-hash is anchor_ref nelkul kepzodik.
+//
+// Nulla kulso fuggoseg - csak a Node beepitett crypto/fs + a kozos axr-core.js.
 // Kilepesi kod: 0 ha minden rendben, 1 ha barmi hiba, 2 ha rossz hasznalat.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const crypto = require('crypto');
 const fs = require('fs');
+const core = require('./axr-core');
 
-const [,, logPath, keyPath] = process.argv;
+// Hasznalat:
+//   node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]
+// Az STH es anchor fajlok OPCIONALISAK: ha meg vannak adva, a 0.3 horgonyzasi
+// ellenorzesek (10-12) is lefutnak. Nelkuluk a 0.1/0.2 + 0.3-sema ellenorzesek
+// (1-9) futnak, a horgonyzott receiptek pedig "fuggoben" jelzest kapnak.
+const [,, logPath, keyPath, sthPath, anchorPath] = process.argv;
 if (!logPath || !keyPath) {
-  console.error('Hasznalat: node axr-verify.js <receipts.jsonl> <public-key.pem>');
+  console.error('Hasznalat: node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]');
   process.exit(2);
 }
 
-// ── Kanonikus szerializalas - ugyanaz, mint a generatorban ────────────────────
-function canonicalize(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(canonicalize).join(',') + ']';
-  const keys = Object.keys(value).sort();
-  return '{' + keys.map(k => JSON.stringify(k) + ':' + canonicalize(value[k])).join(',') + '}';
-}
-function sha256(value) {
-  const input = typeof value === 'string' ? value : canonicalize(value);
-  return 'sha256:' + crypto.createHash('sha256').update(input, 'utf8').digest('hex');
-}
+// ── Kanonikus szerializalas - a core-bol, hogy a ket oldal ne terjen el ─────────
+const canonicalize = core.canonicalize;
+const sha256 = core.sha256;
+
+// Verzio-fuggo alairas-ellenorzes: 0.3-nal a 'signature' ES az 'anchor_ref' is
+// kimarad az alairt reszbol (core.signablePart kezeli).
 function verifySignature(receipt, publicKey) {
-  const { signature, ...rest } = receipt;
-  if (!signature) return false;
+  if (!receipt.signature) return false;
   try {
-    return crypto.verify(null, Buffer.from(canonicalize(rest), 'utf8'),
-      publicKey, Buffer.from(signature, 'base64'));
+    return crypto.verify(null, Buffer.from(canonicalize(core.signablePart(receipt)), 'utf8'),
+      publicKey, Buffer.from(receipt.signature, 'base64'));
   } catch (e) { return false; }
 }
+
+// Lanc-hash: a previous_receipt_hash / chain_root_hash szamitasanal a 0.3-ban az
+// anchor_ref-et ki kell hagyni (az alairas + lancolas utan irodik). 0.1/0.2-nel
+// nincs anchor_ref, igy ez no-op. A core-bol jon, hogy a generator es a verifier
+// garantaltan ne terjen el.
+const chainHash = core.chainHash;
 
 // ── Beolvasas ──────────────────────────────────────────────────────────────────
 let publicKey;
@@ -122,7 +135,7 @@ for (const wf of workflows) {
 
   // step-lanc folytonossag
   for (let i = 0; i < wfSteps.length; i++) {
-    const expectedPrev = i === 0 ? null : sha256(wfSteps[i-1]);
+    const expectedPrev = i === 0 ? null : chainHash(wfSteps[i-1]);
     if (wfSteps[i].previous_receipt_hash !== expectedPrev) {
       problem(`workflow ${wf.receipt_id}: a(z) ${i+1}. lepes (${wfSteps[i].step?.node_name}) ` +
               `previous_receipt_hash-e nem egyezik - a lanc megszakadt vagy lepest modositottak`);
@@ -130,7 +143,7 @@ for (const wf of workflows) {
   }
   // chain_root_hash
   if (wfSteps.length) {
-    const expectedRoot = sha256(wfSteps[wfSteps.length-1]);
+    const expectedRoot = chainHash(wfSteps[wfSteps.length-1]);
     if (wf.chain_root_hash !== expectedRoot) {
       problem(`workflow ${wf.receipt_id}: chain_root_hash nem egyezik az utolso lepessel ` +
               `- lepest tavolitottak el a lanc vegerol`);
@@ -184,7 +197,7 @@ for (const wfId of Object.keys(stepsByWf)) {
 
 // ── 5. Workflow-receiptek osszelancolasa (fajlbeli sorrendben) ─────────────────
 for (let i = 0; i < workflows.length; i++) {
-  const expectedPrev = i === 0 ? null : sha256(workflows[i-1]);
+  const expectedPrev = i === 0 ? null : chainHash(workflows[i-1]);
   if (workflows[i].previous_receipt_hash !== expectedPrev) {
     if (i === 0) {
       // az elso lehet nem-null is, ha a fajl egy korabbi lanc folytatasa - csak figyelmeztetes
@@ -198,6 +211,124 @@ for (let i = 0; i < workflows.length; i++) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.3 ELLENORZESEK (8-12) - generativ lepes, evidence-graph, horgonyzas
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Receipt-id -> receipt terkep (evidence-graph ellenorzeshez)
+const byId = {};
+for (const r of receipts) if (r.receipt_id) byId[r.receipt_id] = r;
+
+// ── 8. Generativ lepes jol-formaltsag ──────────────────────────────────────────
+for (const s of steps) {
+  if (s.step?.kind !== 'generative') continue;
+  const g = s.generation || {};
+  const okHash = (h) => typeof h === 'string' && /^sha256:[0-9a-f]{64}$/.test(h);
+  if (!okHash(g.prompt_hash))
+    problem(`step ${s.receipt_id} ("${s.step?.node_name}"): generativ, de a generation.prompt_hash hianyzik/rossz`);
+  if (!okHash(g.completion_hash))
+    problem(`step ${s.receipt_id} ("${s.step?.node_name}"): generativ, de a generation.completion_hash hianyzik/rossz`);
+  if (!s.step?.model || !s.step.model.id || !s.step.model.provider)
+    problem(`step ${s.receipt_id} ("${s.step?.node_name}"): generativ, de a step.model.id/provider hianyzik`);
+  if (s.io && s.io.decision !== null && s.io.decision !== undefined)
+    problem(`step ${s.receipt_id} ("${s.step?.node_name}"): generativ lepesnek io.decision-je null kell legyen (a dontest a lefele kovetkezo determinisztikus lepes hordozza)`);
+  const lvl = g.reproducibility?.level;
+  if (!['none', 'best_effort', 'deterministic', 'pinned'].includes(lvl))
+    notice(`step ${s.receipt_id} ("${s.step?.node_name}"): ismeretlen reproducibility.level "${lvl}"`);
+}
+
+// ── 9. Evidence-graph integritas ───────────────────────────────────────────────
+// Minden inputs[]-ben hivatkozott receipt letezzen, ugyanabban a workflow-lancban,
+// korabbi sequence-szel (a forras a fogyaszto ELOTT futott).
+for (const s of steps) {
+  if (!Array.isArray(s.inputs)) continue;
+  for (const refId of s.inputs) {
+    const src = byId[refId];
+    if (!src) {
+      problem(`step ${s.receipt_id} ("${s.step?.node_name}"): inputs hivatkozas (${refId}) nem letezo receiptre mutat`);
+    } else if (src.workflow_receipt_id !== s.workflow_receipt_id) {
+      problem(`step ${s.receipt_id}: inputs hivatkozas (${refId}) masik workflow-lancbeli lepesre mutat`);
+    } else if (!(src.sequence < s.sequence)) {
+      problem(`step ${s.receipt_id}: inputs hivatkozas (${refId}) nem korabbi lepesre mutat (sequence ${src.sequence} >= ${s.sequence})`);
+    }
+  }
+}
+
+// ── STH / anchor fajlok betoltese (opcionalis) ─────────────────────────────────
+function loadJsonl(path, label) {
+  if (!path) return null;
+  try {
+    return fs.readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+  } catch (e) {
+    problem(`a(z) ${label} fajl nem olvashato/parse-olhato: ${e.message}`);
+    return [];
+  }
+}
+const sths    = loadJsonl(sthPath, 'STH') || [];
+const anchors = loadJsonl(anchorPath, 'anchor') || [];
+
+// A Merkle-fa levelei = a receiptek FAJLBELI (append) sorrendben.
+const leafReceipts = receipts.filter(r =>
+  ['step', 'workflow', 'identity'].includes(r.receipt_type));
+const leafHashes = leafReceipts.map(core.leafHash);
+const sthByRootSize = {};
+for (const sth of sths) sthByRootSize[`${sth.root_hash}|${sth.tree_size}`] = sth;
+
+// ── 11. STH-lanc + consistency proof ───────────────────────────────────────────
+if (sths.length) {
+  for (const sth of sths) {
+    if (!verifySignature(sth, publicKey))
+      problem(`STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS`);
+    const recomputed = core.merkleRootFromLeaves(leafHashes.slice(0, sth.tree_size));
+    if (sth.tree_size <= leafHashes.length && recomputed !== sth.root_hash)
+      problem(`STH (tree_size=${sth.tree_size}): root_hash nem egyezik az elso ${sth.tree_size} level Merkle-gyokerevel`);
+    if (sth.tree_size > leafHashes.length)
+      notice(`STH (tree_size=${sth.tree_size}) tobb levelet allit, mint amennyi a fajlban van (${leafHashes.length}) - reszleges log?`);
+  }
+  const sorted = sths.slice().sort((a, b) => a.tree_size - b.tree_size);
+  for (let i = 0; i < sorted.length; i++) {
+    const expectedPrev = i === 0 ? null : chainHash(sorted[i-1]);
+    if (i > 0 && sorted[i].previous_sth_hash !== expectedPrev)
+      problem(`STH (tree_size=${sorted[i].tree_size}): previous_sth_hash nem az elozo STH-ra mutat - az STH-lanc serult`);
+    if (i > 0) {
+      const m = sorted[i-1].tree_size, n = sorted[i].tree_size;
+      if (n <= leafHashes.length) {
+        const proof = core.consistencyProof(m, leafHashes.slice(0, n));
+        const ok = core.verifyConsistency(m, n, sorted[i-1].root_hash, sorted[i].root_hash, proof);
+        if (!ok)
+          problem(`STH ${m} -> ${n}: a consistency proof MEGBUKOTT - az ujabb fa NEM az append-only bovitese a reginek (atiras/forkolas jele)`);
+      }
+    }
+  }
+}
+
+// ── 10. Inclusion proof minden horgonyzott receiptre ───────────────────────────
+let anchored = 0, pending = 0;
+for (const r of leafReceipts) {
+  const ar = r.anchor_ref;
+  if (!ar) { pending++; continue; }
+  anchored++;
+  let recomputed = null;
+  try {
+    recomputed = core.rootFromInclusionProof(core.leafHash(r), ar.leaf_index, ar.tree_size, ar.inclusion_proof || []);
+  } catch (e) {
+    problem(`receipt ${r.receipt_id}: inclusion proof ervenytelen (${e.message})`);
+    continue;
+  }
+  if (recomputed !== ar.sth_root_hash)
+    problem(`receipt ${r.receipt_id}: az inclusion proof-bol szamolt gyoker NEM egyezik az anchor_ref.sth_root_hash-sel - a receipt nincs benne abban a faban`);
+  if (sths.length && !sthByRootSize[`${ar.sth_root_hash}|${ar.tree_size}`])
+    problem(`receipt ${r.receipt_id}: az anchor_ref olyan STH-ra hivatkozik (root/${ar.tree_size}), ami nincs az STH-fajlban`);
+}
+
+// ── 12. Anchor cross-check (kulso halozat) ─────────────────────────────────────
+// Offline modban NEM kerdezzuk le a backendet - explicit jelzes, nem hallgatolagos
+// elfogadas (spec 10.2 #12).
+for (const a of anchors) {
+  notice(`ANCHOR_UNVERIFIED: ${a.backend} anchor (root ${String(a.sth_root_hash).slice(0,20)}..., tree_size=${a.tree_size}) ` +
+         `- offline mod, a backend nincs lekerdezve. Online ellenorzeshez kuldd le a backendnek.`);
+}
+
 // ── Osszegzes ──────────────────────────────────────────────────────────────────
 console.log('-'.repeat(72));
 console.log(`Fajl:       ${logPath}`);
@@ -205,6 +336,9 @@ console.log(`Receiptek:  ${receipts.length} osszesen  (${workflows.length} workf
 const verStr = Object.keys(versionCounts).sort()
   .map(v => `${v}: ${versionCounts[v]}`).join(', ');
 console.log(`Verziok:    ${verStr}`);
+if (sths.length || anchored || pending) {
+  console.log(`Horgonyzas: ${anchored} horgonyzott, ${pending} fuggoben  |  ${sths.length} STH, ${anchors.length} anchor-rekord`);
+}
 console.log('-'.repeat(72));
 for (const wf of workflows) {
   const n = (stepsByWf[wf.receipt_id] || []).length;
