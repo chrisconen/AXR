@@ -88,6 +88,21 @@ node axr-verify.js receipts.jsonl public-key.pem sth.jsonl anchors.jsonl
 
 The verifier branches on `axr_version`: 0.1/0.2 chains stay valid, 0.3 chains additionally get checks 8–12 (generative well-formedness, evidence-graph integrity, inclusion proofs, STH chain + consistency, offline anchor cross-check).
 
+### The Monitor (Stage D)
+
+Anchoring is *latent* protection — it only matters if an independent party actually watches. The Monitor is that party. Unlike the verifier (which checks a log at one instant), the Monitor checks a log **over time and across views**: it keeps its own retained journal of the Signed Tree Heads it has witnessed, and raises an alarm when a new view contradicts the old one.
+
+```bash
+# poll an operator's STH file; the monitor keeps its own journal
+node axr-monitor.js poll sth.jsonl public-key.pem \
+     --state monitor-state.json --receipts receipts.jsonl --anchors anchors.jsonl
+
+# compare two independent monitors' journals (split-view / equivocation proof)
+node axr-monitor.js compare monitor-A.json monitor-B.json
+```
+
+What it catches: **EQUIVOCATION** (a different root at an already-witnessed tree size — the operator showed two different trees), **TRUNCATION** (the log shrank), **NON_APPEND_ONLY** (a consistency proof fails — history was rewritten), **ROOT_MISMATCH** (a signed STH whose root does not match the actual receipts), and **BAD_SIGNATURE**. This is what turns guarantees G5/G6 from potential into actual.
+
 ---
 
 ## Integration into an n8n workflow
@@ -207,8 +222,10 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
 | `axr-verify.js` | Standalone verifier: `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]` |
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back |
+| `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`) |
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
 | `axr-anchor-test.js` | **0.3:** anchoring sidecar end-to-end test (idempotency, incremental anchoring, consistency) |
+| `axr-monitor-test.js` | **0.3:** monitor test (equivocation, truncation, root-mismatch, bad signature, journal compare) |
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity) |
 

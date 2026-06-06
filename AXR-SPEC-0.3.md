@@ -1065,24 +1065,37 @@ receipt log (mixed 0.1/0.2 receipts verifying as one chain).
 
 AXR 0.3 is a **draft specification** with a staged implementation plan:
 
-- **Stage A (schema + verifier).** The 0.3 receipt schema, `step.kind`,
-  `inputs` evidence graph, and the version-aware verifier checks 8–11 are
-  implementable against the existing log immediately, since they do not require
-  a generative step or a live anchor. The Merkle/STH/inclusion-proof reference
-  code in §6 and §10 is dependency-free and testable against synthetic vectors.
-- **Stage B (anchoring sidecar).** The out-of-band sidecar (§9.6) targeting
-  OpenTimestamps first (free, no account) and Rekor second. This is the stage
-  that delivers G4–G6 and is the headline of 0.3.
-- **Stage C (generative step).** Lands when the pilot workflow gains its first
-  LLM node (an intent classifier is the likely candidate), exercising §5
-  end-to-end.
-- **Stage D (monitor).** A minimal independent monitor (§7.5), ideally run by a
-  party other than the operator, to make G5/G6 actual rather than potential.
+- **Stage A (schema + verifier). IMPLEMENTED.** The 0.3 receipt schema, `step.kind`,
+  `inputs` evidence graph, and the version-aware verifier checks 8–11 ship in
+  `axr-core.js` / `axr-verify.js`. The Merkle / inclusion-proof / consistency-proof
+  code is dependency-free and covered by test vectors (`axr-test-0.3.js`):
+  inclusion proofs for every index (n=1..17) and consistency proofs for every
+  (m,n) pair (n=1..16), plus tamper-fails.
+- **Stage B (anchoring sidecar). IMPLEMENTED.** The out-of-band sidecar
+  (`axr-anchor.js`) batches receipts into the Merkle tree, emits signed,
+  chained STHs, writes back `anchor_ref`, and submits to backends. The `local`
+  backend is deterministic/offline; the `opentimestamps` backend submits the
+  root digest to public Bitcoin calendars and degrades to `pending_offline`
+  without network. End-to-end tested (`axr-anchor-test.js`): idempotency,
+  incremental anchoring, and a holding consistency proof across two STHs.
+- **Stage C (generative step). PENDING.** Lands when the pilot workflow gains its
+  first LLM node (an intent classifier is the likely candidate), exercising §5
+  end-to-end. The schema and verifier checks (§5, check 8) are already in place.
+- **Stage D (monitor). IMPLEMENTED (reference).** A minimal independent monitor
+  (`axr-monitor.js`) keeps a retained journal of witnessed STHs and detects
+  equivocation, truncation, non-append-only rewrites, root mismatches, and bad
+  signatures; a `compare` command proves split-view between two monitors. Tested
+  (`axr-monitor-test.js`). For the guarantees to be *actual* in production, the
+  monitor must be run by a party other than the operator — the reference
+  implementation makes that deployment cheap, but does not by itself create the
+  independent party.
 
-Until Stage D exists, AXR 0.3's anchoring guarantees are *potential*. The
-specification is published ahead of full implementation deliberately, so the
-threat model and schema can be reviewed before they harden — and the staging is
-stated honestly rather than implied to be finished.
+The cryptographic and protocol layers (A, B, D) are implemented and tested
+offline; what remains for full production assurance is (C) a live generative
+step and, crucially, (D-deployment) an *independent* operator of the monitor.
+Until an independent monitor actually runs, AXR 0.3's G5/G6 guarantees are
+realisable but not yet realised — stated honestly rather than implied to be
+finished.
 
 ---
 
