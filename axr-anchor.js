@@ -216,11 +216,105 @@ async function runAnchor(opts) {
   };
 }
 
-module.exports = { runAnchor, OTS_CALENDARS, LEAF_TYPES };
+// ═══════════════════════════════════════════════════════════════════════════════
+// upgrade - a fuggoben levo OpenTimestamps horgonyok naptari megerositese
+// ═══════════════════════════════════════════════════════════════════════════════
+// A horgonyzaskor a naptarak csak egy reszleges idobelyeget adnak; a Bitcoin-
+// attesztacio a kovetkezo blokkokkal erik be. Az 'upgrade' kesobb ujra lekerdezi
+// a naptarakat: ismeri-e mar a commitmentet (GET /timestamp/<digest>). Ha igen,
+// a naptar-bejegyzes statuszat 'confirmed'-re emeli es rogziti az upgrade valaszt.
+//
+// HATAR (oszinten): ez a naptari ismertseget bizonyitja - a vegleges Bitcoin-blokk
+// PoW ellenorzes a standard 'ots verify' CLI dolga a rogzitett valaszokbol. Az
+// AXR ezt szandekosan delegalja, hogy ne kelljen Bitcoin SPV-t ujraimplementalni.
+function getTimestamp(calendarUrl, digestHex, timeoutMs) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(calendarUrl.replace(/\/$/, '') + '/timestamp/' + digestHex); }
+    catch (e) { return resolve({ status: 'bad_url', error: e.message }); }
+    const req = https.request({
+      hostname: u.hostname, path: u.pathname, method: 'GET',
+      headers: { 'Accept': 'application/vnd.opentimestamps.v1', 'User-Agent': 'axr-anchor/0.4' },
+      timeout: timeoutMs || 8000
+    }, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        if (res.statusCode === 200) resolve({ status: 'confirmed', response_b64: Buffer.concat(chunks).toString('base64') });
+        else if (res.statusCode === 404) resolve({ status: 'pending' });
+        else resolve({ status: 'http_' + res.statusCode });
+      });
+    });
+    req.on('error', e => resolve({ status: 'unreachable', error: e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ status: 'timeout' }); });
+    req.end();
+  });
+}
+
+async function runUpgrade(opts) {
+  const anchorsPath = opts.anchorsPath;
+  if (!anchorsPath) throw new Error('anchorsPath kotelezo');
+  const now = opts.now || (() => new Date().toISOString());
+  const anchors = readJsonl(anchorsPath);
+  let changed = 0, confirmedCals = 0, stillPending = 0;
+
+  for (const a of anchors) {
+    if (a.backend !== 'opentimestamps') continue;
+    const be = a.backend_entry || {};
+    if (be.ots_status === 'confirmed') continue;
+    const digestHex = String(a.sth_root_hash).replace(/^sha256:/, '');
+    const cals = Array.isArray(be.calendars) ? be.calendars : [];
+    let anyConfirmed = false, anyPending = false;
+    for (const c of cals) {
+      const r = await getTimestamp(c.calendar, digestHex, opts.timeoutMs || 8000);
+      if (r.status === 'confirmed') {
+        c.status = 'confirmed';
+        c.upgrade_response_b64 = r.response_b64;
+        c.upgraded_at = now();
+        anyConfirmed = true; confirmedCals++;
+      } else if (r.status === 'pending') {
+        anyPending = true; stillPending++;
+      } else {
+        c.last_upgrade_attempt = { at: now(), status: r.status, error: r.error || null };
+      }
+    }
+    const newStatus = anyConfirmed ? 'confirmed' : (anyPending ? 'submitted_pending_bitcoin' : be.ots_status);
+    if (newStatus !== be.ots_status || anyConfirmed) {
+      be.ots_status = newStatus;
+      be.upgraded_at = now();
+      a.backend_entry = be;
+      changed++;
+    }
+  }
+
+  if (changed) atomicWriteJsonl(anchorsPath, anchors);
+  return { changed, confirmedCals, stillPending, total: anchors.length };
+}
+
+module.exports = { runAnchor, runUpgrade, getTimestamp, OTS_CALENDARS, LEAF_TYPES };
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 if (require.main === module) {
-  const args = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+
+  // 'upgrade' alparancs: a fuggo OTS horgonyok naptari megerositese.
+  //   node axr-anchor.js upgrade <anchors.jsonl>
+  if (rawArgs[0] === 'upgrade') {
+    const anchorsPath = rawArgs[1];
+    if (!anchorsPath) {
+      console.error('Hasznalat: node axr-anchor.js upgrade <anchors.jsonl>');
+      process.exit(2);
+    }
+    runUpgrade({ anchorsPath }).then(res => {
+      console.log(`Upgrade kesz: ${res.changed} anchor-rekord frissult ` +
+        `(${res.confirmedCals} naptar megerositve, ${res.stillPending} meg fuggoben, ${res.total} osszesen).`);
+      console.log(`A vegleges Bitcoin-attesztacio ellenorzese: 'ots verify' a rogzitett naptar-valaszokon.`);
+      process.exit(0);
+    }).catch(e => { console.error('HIBA:', e.message); process.exit(1); });
+    return;
+  }
+
+  const args = rawArgs;
   const positional = [];
   const flags = {};
   for (let i = 0; i < args.length; i++) {
@@ -229,8 +323,9 @@ if (require.main === module) {
   }
   const [receiptsPath, keyPath] = positional;
   if (!receiptsPath || !keyPath) {
-    console.error('Hasznalat: node axr-anchor.js <receipts.jsonl> <private-key.pem> ' +
-      '[--sth sth.jsonl] [--anchors anchors.jsonl] [--backend local|opentimestamps] [--log-id axr:agent:v1]');
+    console.error('Hasznalat: node axr-anchor.js <receipts.jsonl> <sth-private-key.pem> ' +
+      '[--sth sth.jsonl] [--anchors anchors.jsonl] [--backend local|opentimestamps] [--log-id axr:agent:v1]\n' +
+      '       node axr-anchor.js upgrade <anchors.jsonl>');
     process.exit(2);
   }
   const privateKeyPem = fs.readFileSync(keyPath, 'utf8');

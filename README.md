@@ -1,9 +1,23 @@
 # Agent Execution Receipt (AXR)
 
+[![CI](https://github.com/chrisconen/AXR/actions/workflows/ci.yml/badge.svg)](https://github.com/chrisconen/AXR/actions/workflows/ci.yml)
+
 A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
 
 **Current version:** 0.2 — production-tested  
 **Status:** Pilot running on one live workflow. Three pre-existing production bugs discovered and fixed because the receipts made them visible.
+
+### Maturity by layer
+
+AXR ships as one repository spanning several maturity levels. Read a feature's level before depending on it:
+
+| Layer | Version | Maturity |
+|-------|---------|----------|
+| Core: signing, chaining, per-step `input_hash`, canonicalization, cross-impl parity | 0.2 | **Stable** — production-tested, frozen wire format |
+| Anchoring: Merkle batching, Signed Tree Heads, monitor, OTS submission | 0.3 | **Working** — fully tested, OTS Bitcoin proof delegated to `ots verify` |
+| Redactable receipts, side-effect attestation, trust root | 0.4 | **Hardening** — tested, evolving; APIs may still change |
+
+The 0.2 wire format is frozen: 0.1/0.2/0.3 logs verify byte-for-byte under the current verifier. New work is additive. Released versions are intended to be cut as git tags (`v0.2.x`, `v0.3.x`, `v0.4.x`); the `main` branch is the integration line. Run `npm test` (or see CI) for the full cross-implementation suite.
 
 ---
 
@@ -147,7 +161,9 @@ Two levels:
 - **Recheckable** (no attestation): the external reference + a hash of the provider's response let an **auditor independently re-fetch and compare**. Honest framing — not self-proving, but independently checkable.
 - **Attested** (provider co-sign): the external service signs the entry with its own key (`attestSideEffect`), cryptographically binding the event to a party **other than the operator**.
 
-`side_effects` is part of the signed receipt (so it is tamper-evident and anchored); the optional provider attestation verifies on top. Verifier check 14; tested in `axr-sideeffect-test.js`. The key→provider identity bootstrap is the remaining gap (§8).
+`side_effects` is part of the signed receipt (so it is tamper-evident and anchored); the optional provider attestation verifies on top. Verifier check 14; tested in `axr-sideeffect-test.js`.
+
+**Trust root — closing the key→provider bootstrap (§8).** A plain attestation only proves *some* key signed the entry; nothing stops an operator from signing with its own key and calling it `google-calendar`. A **trust root** (`axr-trust-root.js`) is a root-signed, append-resistant allowlist mapping provider names to permitted attestation keys. Supply it with `node axr-verify.js … --trust-root trust-root.json`: an attestation now counts as `attested` only if its key is in the trust root for that provider — otherwise it is downgraded to a problem. The root key is held by a party independent of the operator (auditor, consortium, or published list), which is what makes the binding meaningful. Without a trust root the prior behavior is unchanged (backward compatible). Tested in `axr-trustroot-test.js`.
 
 ### Determinism and adversarial testing
 
@@ -231,6 +247,44 @@ Checks:
 
 For 0.2 chains, the verifier additionally flags uniform `input_hash` values across steps — a sign that marker propagation has regressed to 0.1 behavior.
 
+### Flags (0.4)
+
+```bash
+# CI gate: escalate soft signals (null input_hash, missing redactable detail,
+# unknown reproducibility level) from notices to errors
+node axr-verify.js receipts.jsonl public-key.pem --strict
+
+# Verify Signed Tree Heads with a key separate from the receipt-signing key
+node axr-verify.js receipts.jsonl receipt-pub.pem sth.jsonl anchors.jsonl --sth-key sth-pub.pem
+
+# Bind side-effect attestation to a root-signed provider allowlist (closes N1)
+node axr-verify.js receipts.jsonl public-key.pem --trust-root trust-root.json
+
+# Actually query the OpenTimestamps calendars during anchor cross-check
+node axr-verify.js receipts.jsonl public-key.pem sth.jsonl anchors.jsonl --online
+```
+
+Building a trust root:
+
+```bash
+node axr-trust-root.js build providers.json root-priv.pem root-pub.pem > trust-root.json
+node axr-trust-root.js verify trust-root.json
+```
+
+Upgrading pending OpenTimestamps anchors (calendar-level confirmation; final
+Bitcoin proof-of-work is verified by the standard `ots verify` CLI over the
+recorded responses, by design):
+
+```bash
+node axr-anchor.js upgrade anchors.jsonl
+```
+
+### Tests
+
+```bash
+npm test          # full suite, including JS<->Python cross-implementation parity
+```
+
 ---
 
 ## Pilot workflow
@@ -266,17 +320,21 @@ An accountability layer that produces honest receipts also makes silent failures
 
 ## Known limitations
 
-AXR 0.2 is a working pilot. Each gap below is stated honestly.
+AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening pass narrowed several of them (marked).
 
-**Uniform timestamp.** All step receipts in a run share the same timestamp — the moment the generator node runs — because the generator executes once at the end. Per-step timestamps would require each `__axr_input` marker to also record a write time. Not implemented in 0.2.
+**Uniform timestamp.** All step receipts in a run share the same timestamp — the moment the generator node runs — because the generator executes once at the end. Per-step timestamps would require each `__axr_input` marker to also record a write time. Still open.
 
-**`$('NodeName')` fragility.** The generator reads node outputs via `$('NodeName').all()`. This works in the pilot's n8n version (2.8.3), but cross-node access in the task-runner sandbox is not contractually guaranteed across n8n versions.
+**`$('NodeName')` fragility.** The generator reads node outputs via `$('NodeName').all()`. This works in the pilot's n8n version (2.8.3), but cross-node access in the task-runner sandbox is not contractually guaranteed across n8n versions. Mitigated by the `__axr_input` marker convention, not eliminated.
 
-**Self-declared agent identity.** `agent_id` is a locally assigned string, not a verified credential. There is no central registry.
+**Self-declared agent identity.** `agent_id` is a locally assigned string, not a verified credential. There is no central registry. Still open.
 
-**No generative step coverage.** The pilot workflow is fully deterministic. Non-deterministic (LLM) steps are supported by the schema (`step.model`, `step.deterministic: false`) but untested.
+**Operator self-attestation of side effects (N1).** *Narrowed in 0.4.* With a `--trust-root` supplied, an attestation only counts when its key is in the independently signed provider allowlist, so an operator can no longer attest as a provider it doesn't control. Without a trust root, the recheckable/attested distinction from 0.4 still applies.
 
-**Operator-level key protection.** The Ed25519 private key is a PEM file with mode `600`. Not hardware-grade. A customer-facing deployment at scale would need to revisit key management.
+**Operator-level key protection.** *Improved in 0.4.* The verifier supports key-role separation (`--sth-key`): a compromised receipt key cannot forge tree heads, and vice versa. The keys are still PEM files (mode `600`), not hardware-grade; a customer-facing deployment at scale would still revisit key management (HSM/threshold).
+
+**Anchor loop / Bitcoin proof.** *Closed at calendar level in 0.4.* `axr-anchor.js upgrade` and verifier `--online` confirm OTS calendar inclusion; final Bitcoin-block proof-of-work verification is delegated to the standard `ots verify` CLI over the recorded responses, by design (no Bitcoin SPV is reimplemented).
+
+**No generative step coverage in the live pilot.** The pilot workflow is fully deterministic. Non-deterministic (LLM) steps are supported by the schema and tested end-to-end in `axr-generative-test.js`, but not yet exercised on a live workflow.
 
 ---
 
@@ -284,12 +342,13 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 
 | File | Description |
 |------|-------------|
-| `axr-core.js` | Shared library: canonicalization (RFC 8785/JCS, guarded), SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree, inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`), side-effect attestation (`attestSideEffect`, `verifySideEffect`) |
+| `axr-core.js` | Shared library: canonicalization (RFC 8785/JCS, guarded), SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree (slice-free index-range), inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`), side-effect attestation (`attestSideEffect`, `verifySideEffect`), trust root (`buildTrustRoot`, `verifyTrustRoot`, `trustRootHasKey`) |
 | `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
-| `axr-verify.js` | Standalone verifier (checks 1–14): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]` |
+| `axr-verify.js` | Standalone verifier (checks 1–14): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]`; **0.4 flags:** `--strict`, `--sth-key`, `--trust-root`, `--online` |
 | `axr_verify.py` | **Independent** zero-dependency Python verifier (own canonicalizer, pure-Python Ed25519, RFC 6962 Merkle) — cross-implementation proof |
-| `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back |
+| `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back; **0.4:** `upgrade` subcommand (OTS calendar confirmation) |
+| `axr-trust-root.js` | **0.4:** trust-root builder/verifier CLI — root-signed provider key allowlist (`build`, `verify`) |
 | `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`) |
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
 | `axr-anchor-test.js` | **0.3:** anchoring sidecar end-to-end test (idempotency, incremental anchoring, consistency) |
@@ -300,6 +359,14 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 | `axr-canonical-test.js` | Canonicalization (RFC 8785/JCS) byte vectors, determinism, and guard tests |
 | `axr-adversarial-test.js` | Systematic tamper matrix: 15 mutations of a valid anchored log, all rejected |
 | `axr-crossverify-test.js` | Cross-implementation test: JS vs Python canonicalization parity + verifier agreement (valid & tampered) |
+| `axr-trustroot-test.js` | **0.4:** trust-root test — N1 closure (self-attested key rejected, real provider key accepted, tamper-proof allowlist, end-to-end `--trust-root`) |
+| `axr-strict-test.js` | **0.4:** `--strict` mode test — soft signals pass by default, become errors under strict |
+| `axr-keysep-test.js` | **0.4:** key-role separation test — STH key distinct from receipt key (`--sth-key`) |
+| `run-tests.js` | Unified test runner (`npm test`) — runs every suite, aggregates exit code for CI |
+| `package.json` | Package metadata, `npm test` wiring, zero runtime dependencies |
+| `.github/workflows/ci.yml` | CI matrix (Node 18/20/22 x Python 3.10/3.11/3.12) running the full suite incl. cross-impl parity |
+| `LICENSE` | MIT |
+| `CHANGELOG.md` | Version history, including the 0.4 hardening pass |
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity); §15 future directions (0.4+) |
 | `COMPLIANCE.md` | Technical-control mapping to EU AI Act Art. 12 / GDPR (informational, not legal advice) |

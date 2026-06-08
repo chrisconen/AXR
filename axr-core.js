@@ -303,12 +303,21 @@ function largestPowerOfTwoLessThan(n) {
 
 // ── Merkle Tree Hash (RFC 6962) egy level-hash tomb felett ─────────────────────
 // Bemenet: level-hash string-ek tombje. n==1 -> a level-hash maga a gyoker.
-function _mth(leafHashes) {
-  const n = leafHashes.length;
+//
+// Implementacio: indextartomany-alapu rekurzio (NEM slice). A korabbi valtozat
+// minden szinten uj tombot masolt (O(n log n) memoria-churn); ez a [lo,hi)
+// felfele adott tomb felett dolgozik, igy O(log n) verem es nulla masolas mellett
+// BYTE-AZONOS gyokeret ad (ugyanaz az RFC 6962 split: a legnagyobb 2-hatvany n
+// alatt). A cross-impl byte-vektorok (axr-canonical/crossverify) ezt orzik.
+function _mthRange(leaves, lo, hi) {
+  const n = hi - lo;
   if (n === 0) return _toHashStr(_sha256Bytes(Buffer.alloc(0)));
-  if (n === 1) return leafHashes[0];
+  if (n === 1) return leaves[lo];
   const k = largestPowerOfTwoLessThan(n);
-  return nodeHash(_mth(leafHashes.slice(0, k)), _mth(leafHashes.slice(k)));
+  return nodeHash(_mthRange(leaves, lo, lo + k), _mthRange(leaves, lo + k, hi));
+}
+function _mth(leafHashes) {
+  return _mthRange(leafHashes, 0, leafHashes.length);
 }
 
 // Gyoker egy receipt-tomb felett (a leveleket maga szamolja).
@@ -317,20 +326,23 @@ function merkleRoot(receipts) {
 }
 // Gyoker mar kiszamolt level-hash-ek felett.
 function merkleRootFromLeaves(leafHashes) {
-  return _mth(leafHashes.slice());
+  return _mthRange(leafHashes, 0, leafHashes.length);
 }
 
 // ── Inclusion proof generalas (RFC 6962 PATH) ──────────────────────────────────
 // Visszaadja a testver-hashek listajat a leveltol a gyokerig (string-tomb).
+// Indextartomany-alapu (slice nelkul), a gyoker-szamolassal azonos split-logikaval.
 function inclusionProof(index, leafHashes) {
-  function rec(i, leaves) {
-    const n = leaves.length;
-    if (n <= 1) return [];
+  const out = [];
+  function rec(i, lo, hi) {
+    const n = hi - lo;
+    if (n <= 1) return;
     const k = largestPowerOfTwoLessThan(n);
-    if (i < k) return rec(i, leaves.slice(0, k)).concat([_mth(leaves.slice(k))]);
-    return rec(i - k, leaves.slice(k)).concat([_mth(leaves.slice(0, k))]);
+    if (i < k) { rec(i, lo, lo + k); out.push(_mthRange(leafHashes, lo + k, hi)); }
+    else       { rec(i - k, lo + k, hi); out.push(_mthRange(leafHashes, lo, lo + k)); }
   }
-  return rec(index, leafHashes.slice());
+  rec(index, 0, leafHashes.length);
+  return out;
 }
 
 // ── Inclusion proof ellenorzes - gyoker visszaszamolasa (CT iterativ algoritmus)
@@ -367,14 +379,17 @@ function consistencyProof(m, leafHashes) {
   const n = leafHashes.length;
   if (m <= 0 || m > n) throw new Error('ervenytelen m a consistency proof-hoz');
   if (m === n) return [];
-  function sub(mm, leaves, onPath) {
-    const nn = leaves.length;
-    if (mm === nn) return onPath ? [] : [_mth(leaves)];
+  const out = [];
+  // [lo,hi) felfele, slice nelkul; a logika 1:1 az RFC 6962 SUBPROOF-jal.
+  function sub(mm, lo, hi, onPath) {
+    const nn = hi - lo;
+    if (mm === nn) { if (!onPath) out.push(_mthRange(leafHashes, lo, hi)); return; }
     const k = largestPowerOfTwoLessThan(nn);
-    if (mm <= k) return sub(mm, leaves.slice(0, k), onPath).concat([_mth(leaves.slice(k))]);
-    return sub(mm - k, leaves.slice(k), false).concat([_mth(leaves.slice(0, k))]);
+    if (mm <= k) { sub(mm, lo, lo + k, onPath); out.push(_mthRange(leafHashes, lo + k, hi)); }
+    else         { sub(mm - k, lo + k, hi, false); out.push(_mthRange(leafHashes, lo, lo + k)); }
   }
-  return sub(m, leafHashes.slice(), true);
+  sub(m, 0, n, true);
+  return out;
 }
 
 // ── Consistency proof ellenorzes (CT iterativ algoritmus) ──────────────────────
@@ -515,9 +530,21 @@ function attestSideEffect(entry, providerPrivPem, providerPubPem) {
   return { ...base, attestation: { algorithm: 'ed25519', public_key: providerPubPem, signature: sig } };
 }
 
-// Egy side-effect bejegyzes ellenorzese: strukturalis + (ha van) provider-alairas.
+// Egy side-effect bejegyzes ellenorzese: strukturalis + (ha van) provider-alairas
+// + (ha van trustRoot) a kulcs->provider azonossag kotese.
+//
+// trustRoot (opcionalis): egy MAR VERIFIKALT trust-root objektum (lasd
+// verifyTrustRoot / loadTrustRoot). Ha at van adva:
+//   - egy attestation csak akkor szamit "attested"-nek, ha a benne levo
+//     public_key szerepel a trust-root providerhez (entry.provider) tartozo
+//     kulcs-listajaban. Kulonben PROBLEMA ("a kulcs nincs a trust-rootban") -
+//     ez zarja le az N1 lyukat: az operator nem nevezheti sajat kulcsat
+//     'google-calendar'-nak, mert az nincs a fuggetlenul alairt allowlistben.
+// Ha trustRoot NINCS atadva, a viselkedes valtozatlan (0.4 eredeti): az
+// attestation strukturalis+alairas-szinten verifikal, de a kulcs->provider
+// kotes nem ellenorzott (ezt a verifier notice-ban jelzi).
 // -> { ok, problems, attested }
-function verifySideEffect(entry) {
+function verifySideEffect(entry, trustRoot) {
   const problems = [];
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     return { ok: false, problems: ['a side-effect bejegyzes nem objektum'], attested: false };
@@ -543,8 +570,82 @@ function verifySideEffect(entry) {
         else attested = true;
       } catch (e) { problems.push('attestation ellenorzes hiba: ' + e.message); }
     }
+    // trust-root kotes: a kulcs valoban a providerhez tartozik-e
+    if (attested && trustRoot) {
+      if (!trustRootHasKey(trustRoot, entry.provider, a.public_key)) {
+        problems.push(`az attestation kulcsa NINCS a trust-rootban a(z) "${entry.provider}" providerhez ` +
+          `- az "attested" allitas nem megbizhato (lehet operator-onattesztacio)`);
+        attested = false;
+      }
+    }
   }
   return { ok: problems.length === 0, problems, attested };
+}
+
+// Egy publikus kulcs (PEM) provider-tagsaganak ellenorzese egy verifikalt
+// trust-rootban. A kulcsokat normalizaltan (whitespace-mentesen) hasonlitjuk,
+// hogy a PEM sortores-kulonbsegek ne okozzanak false negative-et.
+function _normalizePem(pem) {
+  return String(pem).replace(/\s+/g, '');
+}
+function trustRootHasKey(trustRoot, provider, publicKeyPem) {
+  if (!trustRoot || !Array.isArray(trustRoot.providers)) return false;
+  const want = _normalizePem(publicKeyPem);
+  const p = trustRoot.providers.find(x => x && x.provider === provider);
+  if (!p || !Array.isArray(p.public_keys)) return false;
+  return p.public_keys.some(k => _normalizePem(k) === want);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.4 - Trust root (a side-effect attestation kulcs->provider azonossag bootstrap)
+// ═══════════════════════════════════════════════════════════════════════════════
+// A trust-root egy ONALLO, root-kulccsal alairt dokumentum, ami provider-nevekhez
+// rendel megengedett provider-publikuskulcsokat. Az alairas megakadalyozza, hogy
+// barki utolag bovitse vagy atirja. A root-kulcs az operatortol FUGGETLEN fel
+// (pl. egy auditor, egy konzorcium, vagy egy publikalt allowlist) tulajdonaban
+// all - ez teszi a kulcs->provider kotest megbizhatova (§8 lezarasa).
+//
+// Alak:
+//   { axr_version, record_type: 'trust_root', issued_at, root_public_key,
+//     providers: [ { provider, public_keys: [pem, ...] }, ... ], signature }
+// Az alairas a 'signature' mezo NELKULI kanonikus format fedi.
+
+function buildTrustRoot(providers, rootPrivPem, rootPubPem, now) {
+  const body = {
+    axr_version: '0.4',
+    record_type: 'trust_root',
+    issued_at: (now || (() => new Date().toISOString()))(),
+    root_public_key: rootPubPem,
+    providers: (providers || []).map(p => ({
+      provider: p.provider,
+      public_keys: (p.public_keys || []).slice()
+    }))
+  };
+  const sig = crypto.sign(null, Buffer.from(canonicalize(body), 'utf8'),
+    crypto.createPrivateKey(rootPrivPem)).toString('base64');
+  return { ...body, signature: sig };
+}
+
+// A trust-root onellenorzese: a sajat root_public_key-evel verifikal-e az alairas.
+// (A root-kulcs hitelet a kulso vilag adja - publikalas, tanusitvany, stb.; itt a
+// dokumentum INTEGRITASAT ellenorizzuk, hogy utolag ne lehessen bovitni.)
+// -> { ok, problems }
+function verifyTrustRoot(trustRoot) {
+  const problems = [];
+  if (!trustRoot || typeof trustRoot !== 'object') return { ok: false, problems: ['nem objektum'] };
+  if (trustRoot.record_type !== 'trust_root') problems.push('record_type != trust_root');
+  if (!trustRoot.root_public_key) problems.push('hianyzo root_public_key');
+  if (!Array.isArray(trustRoot.providers)) problems.push('a providers nem tomb');
+  if (!trustRoot.signature) problems.push('hianyzo signature');
+  if (problems.length) return { ok: false, problems };
+  const body = { ...trustRoot }; delete body.signature;
+  try {
+    const ok = crypto.verify(null, Buffer.from(canonicalize(body), 'utf8'),
+      crypto.createPublicKey(trustRoot.root_public_key),
+      Buffer.from(trustRoot.signature, 'base64'));
+    if (!ok) problems.push('a trust-root alairasa ERVENYTELEN (a root-kulccsal nem verifikal)');
+  } catch (e) { problems.push('trust-root alairas-ellenorzes hiba: ' + e.message); }
+  return { ok: problems.length === 0, problems };
 }
 
 module.exports = {
@@ -581,5 +682,9 @@ module.exports = {
   verifyRedactable,
   // 0.4 side-effect attestation
   attestSideEffect,
-  verifySideEffect
+  verifySideEffect,
+  // 0.4 trust root (kulcs->provider azonossag)
+  buildTrustRoot,
+  verifyTrustRoot,
+  trustRootHasKey
 };

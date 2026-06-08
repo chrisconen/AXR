@@ -36,16 +36,49 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const https = require('https');
 const core = require('./axr-core');
 
 // Hasznalat:
 //   node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]
+//                      [--strict] [--sth-key <pem>] [--trust-root <json>] [--online]
 // Az STH es anchor fajlok OPCIONALISAK: ha meg vannak adva, a 0.3 horgonyzasi
 // ellenorzesek (10-12) is lefutnak. Nelkuluk a 0.1/0.2 + 0.3-sema ellenorzesek
 // (1-9) futnak, a horgonyzott receiptek pedig "fuggoben" jelzest kapnak.
-const [,, logPath, keyPath, sthPath, anchorPath] = process.argv;
+//
+// Kapcsolok:
+//   --strict            a "puha" jelzeseket (null input_hash, hianyzo redactable
+//                       detail, ismeretlen reproducibility-szint, trust-root nelkuli
+//                       attestation) HIBAVA emeli - CI-kapunak
+//   --sth-key <pem>     az STH-kat egy KULON kulccsal verifikalja (kulcs-szerep
+//                       szetvalasztas): a receipteket a fo kulcs, az STH-kat ez.
+//                       Megadasa nelkul az STH-t is a fo kulccsal ellenorzi.
+//   --trust-root <json> egy alairt provider-allowlist; a side-effect attestation
+//                       kulcsanak benne kell lennie, kulonben az "attested" hibava
+//                       fokozodik (N1 lezarasa)
+//   --online            a 12. ellenorzesnel a kulso backendet (OpenTimestamps
+//                       naptarak) TENYLEGESEN lekerdezi a digest ismertsegere
+//                       (best-effort; a Bitcoin-fejlec szintu PoW ellenorzes az
+//                       'ots' CLI-re marad - lasd README)
+function parseArgs(argv) {
+  const positional = [];
+  const flags = { strict: false, online: false, sthKey: null, trustRoot: null };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--strict') flags.strict = true;
+    else if (a === '--online') flags.online = true;
+    else if (a === '--sth-key') flags.sthKey = argv[++i];
+    else if (a === '--trust-root') flags.trustRoot = argv[++i];
+    else if (a.startsWith('--')) { console.error('ismeretlen kapcsolo: ' + a); process.exit(2); }
+    else positional.push(a);
+  }
+  return { positional, flags };
+}
+const { positional: _pos, flags: ARGS } = parseArgs(process.argv.slice(2));
+const [logPath, keyPath, sthPath, anchorPath] = _pos;
 if (!logPath || !keyPath) {
-  console.error('Hasznalat: node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]');
+  console.error('Hasznalat: node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]\n' +
+    '            [--strict] [--sth-key <pem>] [--trust-root <json>] [--online]');
   process.exit(2);
 }
 
@@ -77,6 +110,38 @@ try {
   console.error('HIBA: a publikus kulcs nem olvashato: ' + e.message);
   process.exit(2);
 }
+
+// Kulcs-szerep szetvalasztas: ha --sth-key meg van adva, az STH-kat ezzel
+// (es CSAK ezzel) verifikaljuk; a receipteket tovabbra is a fo kulccsal. Igy
+// egy receipt-alairo kulcs kompromittalodasa nem teszi hamisithatova a fa-fejeket
+// (es forditva). Megadasa nelkul az STH-t is a fo kulcs fedi (visszafele komp.).
+let sthPublicKey = publicKey;
+if (ARGS.sthKey) {
+  try {
+    sthPublicKey = crypto.createPublicKey(fs.readFileSync(ARGS.sthKey, 'utf8'));
+  } catch (e) {
+    console.error('HIBA: a --sth-key nem olvashato: ' + e.message);
+    process.exit(2);
+  }
+}
+
+// Trust-root: ha meg van adva, eloszor ONMAGAT kell verifikalnia (a sajat
+// root-kulcsaval), kulonben nem hasznaljuk (es hibat jelzunk). A side-effect
+// attestation ezutan ehhez kotodik (core.verifySideEffect masodik parametere).
+let trustRoot = null;
+if (ARGS.trustRoot) {
+  try {
+    trustRoot = JSON.parse(fs.readFileSync(ARGS.trustRoot, 'utf8'));
+  } catch (e) {
+    console.error('HIBA: a --trust-root nem olvashato/ervenytelen JSON: ' + e.message);
+    process.exit(2);
+  }
+  const trChk = core.verifyTrustRoot(trustRoot);
+  if (!trChk.ok) {
+    console.error('HIBA: a --trust-root nem verifikal (a root-kulccsal): ' + trChk.problems.join('; '));
+    process.exit(2);
+  }
+}
 let lines;
 try {
   lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
@@ -88,6 +153,16 @@ try {
 let problems = 0;
 const problem = (msg) => { problems++; console.log('  [HIBA] ' + msg); };
 const notice  = (msg) => { console.log('  [megj] ' + msg); };
+// soft: strict modban HIBA, kulonben csak figyelmeztetes. Azokra a minosegi
+// jelzesekre, amik nem feltetlen manipulacio, de egy CI-kapunal nem szabad
+// atengedni (null input_hash, hianyzo redactable detail, ismeretlen
+// reproducibility-szint, trust-root nelkuli attestation).
+let softWarnings = 0;
+const soft = (msg) => {
+  softWarnings++;
+  if (ARGS.strict) { problems++; console.log('  [HIBA] (strict) ' + msg); }
+  else console.log('  [megj] ' + msg);
+};
 
 // ── Verzio-osszehasonlitas helper ──────────────────────────────────────────────
 // "0.2" >= "0.2" -> true ; "0.1" >= "0.2" -> false. Egyszeru major.minor parse,
@@ -174,8 +249,8 @@ for (const wf of workflows) {
     // null input_hash: a node nem hagyott __axr_input markert
     for (const s of v02steps) {
       if (s.io?.input_hash === null || s.io?.input_hash === undefined) {
-        notice(`workflow ${wf.receipt_id}: a(z) "${s.step?.node_name}" lepes input_hash-e null ` +
-               `- a node nem hagyott __axr_input markert (0.2 konfiguracios hiany, nem manipulacio)`);
+        soft(`workflow ${wf.receipt_id}: a(z) "${s.step?.node_name}" lepes input_hash-e null ` +
+             `- a node nem hagyott __axr_input markert (0.2 konfiguracios hiany, nem manipulacio)`);
       }
     }
 
@@ -238,7 +313,7 @@ for (const s of steps) {
     problem(`step ${s.receipt_id} ("${s.step?.node_name}"): generativ lepesnek io.decision-je null kell legyen (a dontest a lefele kovetkezo determinisztikus lepes hordozza)`);
   const lvl = g.reproducibility?.level;
   if (!['none', 'best_effort', 'deterministic', 'pinned'].includes(lvl))
-    notice(`step ${s.receipt_id} ("${s.step?.node_name}"): ismeretlen reproducibility.level "${lvl}"`);
+    soft(`step ${s.receipt_id} ("${s.step?.node_name}"): ismeretlen reproducibility.level "${lvl}"`);
 }
 
 // ── 9. Evidence-graph integritas ───────────────────────────────────────────────
@@ -268,7 +343,7 @@ for (const r of receipts) {
   redactableCount++;
   const res = core.verifyRedactable(r);
   if (res.detailAbsent) {
-    notice(`receipt ${r.receipt_id}: redactable_root jelen, de a detail hianyzik - a commitment alairt, de lokalisan nem ellenorizheto`);
+    soft(`receipt ${r.receipt_id}: redactable_root jelen, de a detail hianyzik - a commitment alairt, de lokalisan nem ellenorizheto`);
   }
   for (const p of res.problems) {
     if (!res.detailAbsent) problem(`receipt ${r.receipt_id}: redactable - ${p}`);
@@ -287,7 +362,7 @@ for (const r of receipts) {
   if (!Array.isArray(r.side_effects)) continue;
   for (const entry of r.side_effects) {
     sideEffectCount++;
-    const res = core.verifySideEffect(entry);
+    const res = core.verifySideEffect(entry, trustRoot);
     for (const p of res.problems) {
       problem(`receipt ${r.receipt_id}: side-effect (${entry && entry.type}) - ${p}`);
     }
@@ -323,7 +398,7 @@ for (const sth of sths) sthByRootSize[`${sth.root_hash}|${sth.tree_size}`] = sth
 // ── 11. STH-lanc + consistency proof ───────────────────────────────────────────
 if (sths.length) {
   for (const sth of sths) {
-    if (!verifySignature(sth, publicKey))
+    if (!verifySignature(sth, sthPublicKey))
       problem(`STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS`);
     const recomputed = core.merkleRootFromLeaves(leafHashes.slice(0, sth.tree_size));
     if (sth.tree_size <= leafHashes.length && recomputed !== sth.root_hash)
@@ -368,43 +443,127 @@ for (const r of leafReceipts) {
 }
 
 // ── 12. Anchor cross-check (kulso halozat) ─────────────────────────────────────
-// Offline modban NEM kerdezzuk le a backendet - explicit jelzes, nem hallgatolagos
-// elfogadas (spec 10.2 #12).
-for (const a of anchors) {
-  notice(`ANCHOR_UNVERIFIED: ${a.backend} anchor (root ${String(a.sth_root_hash).slice(0,20)}..., tree_size=${a.tree_size}) ` +
-         `- offline mod, a backend nincs lekerdezve. Online ellenorzeshez kuldd le a backendnek.`);
+// Offline modban (default) NEM kerdezzuk le a backendet - explicit jelzes, nem
+// hallgatolagos elfogadas (spec 10.2 #12). --online eseten az OpenTimestamps
+// naptarakat TENYLEGESEN lekerdezzuk: ismeri-e a naptar a lehorgonyzott digestet.
+//
+// FONTOS HATAR: ez azt bizonyitja, hogy a digest bekerult egy fuggetlen OTS
+// naptarba (tehat letezik es kovetheto) - NEM a vegleges Bitcoin-blokk PoW
+// attesztaciot. A teljes .ots proof osszeallitasat es a Bitcoin-fejlec szintu
+// ellenorzest a standard 'ots verify' CLI vegzi a tarolt naptar-valaszokbol.
+// Igy a verifier online modja "a horgony letezik es a naptar ismeri" szintig
+// zar - a tovabbit szandekosan a referencia OTS eszkozre delegaljuk.
+
+// Egy OTS naptar GET /timestamp/<digest-hex> lekerdezese. 200 -> a naptar ismeri
+// a commitmentet; 404 -> meg nem; egyeb/halozati hiba -> nem eldontheto.
+function otsCalendarKnows(calendarUrl, digestHex, timeoutMs) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(calendarUrl.replace(/\/$/, '') + '/timestamp/' + digestHex); }
+    catch (e) { return resolve({ status: 'bad_url', error: e.message }); }
+    const req = https.request({
+      hostname: u.hostname, path: u.pathname, method: 'GET',
+      headers: { 'Accept': 'application/vnd.opentimestamps.v1', 'User-Agent': 'axr-verify/0.4' },
+      timeout: timeoutMs || 8000
+    }, res => {
+      res.on('data', () => {});
+      res.on('end', () => {
+        if (res.statusCode === 200) resolve({ status: 'known' });
+        else if (res.statusCode === 404) resolve({ status: 'pending' });
+        else resolve({ status: 'http_' + res.statusCode });
+      });
+    });
+    req.on('error', e => resolve({ status: 'unreachable', error: e.message }));
+    req.on('timeout', () => { req.destroy(); resolve({ status: 'timeout' }); });
+    req.end();
+  });
 }
 
-// ── Osszegzes ──────────────────────────────────────────────────────────────────
-console.log('-'.repeat(72));
-console.log(`Fajl:       ${logPath}`);
-console.log(`Receiptek:  ${receipts.length} osszesen  (${workflows.length} workflow, ${steps.length} lepes)`);
-const verStr = Object.keys(versionCounts).sort()
-  .map(v => `${v}: ${versionCounts[v]}`).join(', ');
-console.log(`Verziok:    ${verStr}`);
-if (sths.length || anchored || pending) {
-  console.log(`Horgonyzas: ${anchored} horgonyzott, ${pending} fuggoben  |  ${sths.length} STH, ${anchors.length} anchor-rekord`);
+async function crossCheckAnchors() {
+  for (const a of anchors) {
+    const rootShort = String(a.sth_root_hash).slice(0, 20);
+    if (!ARGS.online) {
+      notice(`ANCHOR_UNVERIFIED: ${a.backend} anchor (root ${rootShort}..., tree_size=${a.tree_size}) ` +
+             `- offline mod, a backend nincs lekerdezve. Online ellenorzeshez: --online (vagy 'ots verify').`);
+      continue;
+    }
+    if (a.backend !== 'opentimestamps') {
+      notice(`ANCHOR_UNVERIFIED: ${a.backend} anchor (root ${rootShort}...) - online ellenorzes csak opentimestamps backendre van.`);
+      continue;
+    }
+    const digestHex = String(a.sth_root_hash).replace(/^sha256:/, '');
+    const cals = (a.backend_entry && Array.isArray(a.backend_entry.calendars))
+      ? a.backend_entry.calendars.map(c => c.calendar).filter(Boolean)
+      : [];
+    if (!cals.length) {
+      notice(`ANCHOR: opentimestamps anchor (root ${rootShort}...) - nincs rogzitett naptar a backend_entry-ben, kihagyva.`);
+      continue;
+    }
+    let known = 0, pending = 0, unknown = 0;
+    for (const cal of cals) {
+      const r = await otsCalendarKnows(cal, digestHex, 8000);
+      if (r.status === 'known') known++;
+      else if (r.status === 'pending') pending++;
+      else unknown++;
+    }
+    if (known > 0) {
+      notice(`ANCHOR_ONLINE_OK: opentimestamps (root ${rootShort}..., tree_size=${a.tree_size}) ` +
+             `- ${known}/${cals.length} naptar ismeri a digestet. (Bitcoin PoW: 'ots verify'.)`);
+    } else if (pending > 0) {
+      notice(`ANCHOR_ONLINE_PENDING: opentimestamps (root ${rootShort}...) ` +
+             `- a naptarak meg nem adtak vissza a commitmentet (${pending} pending). Probald kesobb / 'ots upgrade'.`);
+    } else {
+      // egyetlen naptar sem volt elerheto / nem dontheto el -> nem hiba, de jelezzuk
+      notice(`ANCHOR_ONLINE_UNVERIFIED: opentimestamps (root ${rootShort}...) ` +
+             `- egyetlen naptar sem volt lekerdezheto (halozat?).`);
+    }
+  }
 }
-if (redactableCount) {
-  console.log(`Redactable: ${redactableCount} receipt commitmenttel, ${redactedFieldCount} torolt mezo (a commitment es az alairas ep)`);
+
+async function finalize() {
+  await crossCheckAnchors();
+
+  // ── Osszegzes ────────────────────────────────────────────────────────────────
+  console.log('-'.repeat(72));
+  console.log(`Fajl:       ${logPath}`);
+  console.log(`Receiptek:  ${receipts.length} osszesen  (${workflows.length} workflow, ${steps.length} lepes)`);
+  const verStr = Object.keys(versionCounts).sort()
+    .map(v => `${v}: ${versionCounts[v]}`).join(', ');
+  console.log(`Verziok:    ${verStr}`);
+  if (ARGS.sthKey) console.log(`STH-kulcs:  kulon (--sth-key) - kulcs-szerep szetvalasztva`);
+  if (trustRoot) {
+    const np = (trustRoot.providers || []).length;
+    console.log(`Trust-root: ervenyes, ${np} provider - a side-effect attestation ehhez kotve`);
+  }
+  if (sths.length || anchored || pending) {
+    console.log(`Horgonyzas: ${anchored} horgonyzott, ${pending} fuggoben  |  ${sths.length} STH, ${anchors.length} anchor-rekord`);
+  }
+  if (redactableCount) {
+    console.log(`Redactable: ${redactableCount} receipt commitmenttel, ${redactedFieldCount} torolt mezo (a commitment es az alairas ep)`);
+  }
+  if (sideEffectCount) {
+    console.log(`Side-effect: ${sideEffectCount} bejegyzes (${attestedCount} provider-attesztalt, ${recheckableCount} auditor altal ujra-ellenorizheto)`);
+  }
+  if (softWarnings) {
+    console.log(`Puha jelzes: ${softWarnings} db${ARGS.strict ? ' (strict modban HIBANAK szamitva)' : ' (megj.; --strict eseten hiba lenne)'}`);
+  }
+  console.log('-'.repeat(72));
+  for (const wf of workflows) {
+    const n = (stepsByWf[wf.receipt_id] || []).length;
+    const ts = wf.workflow?.trigger_timestamp || '(nincs idobelyeg)';
+    const status = (wf.outcome?.final_status || '?').padEnd(24);
+    const ver = (wf.axr_version || '?').padEnd(5);
+    console.log(`  ${ts}  v${ver}  ${status}  ${n} lepes`);
+  }
+  console.log('-'.repeat(72));
+  if (problems === 0) {
+    console.log('EREDMENY: A TELJES LANC ERVENYES.');
+    console.log('Minden alairas helyes, minden hash-lanc folytonos, semmit nem modositottak.');
+    process.exit(0);
+  } else {
+    console.log(`EREDMENY: ${problems} PROBLEMA TALALVA. A lanc serult vagy manipulalt.`);
+    process.exit(1);
+  }
 }
-if (sideEffectCount) {
-  console.log(`Side-effect: ${sideEffectCount} bejegyzes (${attestedCount} provider-attesztalt, ${recheckableCount} auditor altal ujra-ellenorizheto)`);
-}
-console.log('-'.repeat(72));
-for (const wf of workflows) {
-  const n = (stepsByWf[wf.receipt_id] || []).length;
-  const ts = wf.workflow?.trigger_timestamp || '(nincs idobelyeg)';
-  const status = (wf.outcome?.final_status || '?').padEnd(24);
-  const ver = (wf.axr_version || '?').padEnd(5);
-  console.log(`  ${ts}  v${ver}  ${status}  ${n} lepes`);
-}
-console.log('-'.repeat(72));
-if (problems === 0) {
-  console.log('EREDMENY: A TELJES LANC ERVENYES.');
-  console.log('Minden alairas helyes, minden hash-lanc folytonos, semmit nem modositottak.');
-  process.exit(0);
-} else {
-  console.log(`EREDMENY: ${problems} PROBLEMA TALALVA. A lanc serult vagy manipulalt.`);
-  process.exit(1);
-}
+
+finalize();

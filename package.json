@@ -1,0 +1,59 @@
+{
+  "name": "axr",
+  "version": "0.4.0",
+  "description": "Agent Execution Receipt - tamper-evident, cryptographically signed execution records for automated workflows and AI agents.",
+  "license": "MIT",
+  "author": "Conen Digital",
+  "homepage": "https://github.com/chrisconen/AXR",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chrisconen/AXR.git"
+  },
+  "keywords": [
+    "audit",
+    "tamper-evident",
+    "merkle-tree",
+    "certificate-transparency",
+    "rfc6962",
+    "ed25519",
+    "jcs",
+    "rfc8785",
+    "n8n",
+    "ai-agent",
+    "accountability",
+    "opentimestamps"
+  ],
+  "main": "axr-core.js",
+  "bin": {
+    "axr-verify": "axr-verify.js",
+    "axr-anchor": "axr-anchor.js",
+    "axr-monitor": "axr-monitor.js"
+  },
+  "files": [
+    "axr-core.js",
+    "axr-generator.js",
+    "axr-n8n-node.js",
+    "axr-verify.js",
+    "axr-anchor.js",
+    "axr-monitor.js",
+    "axr-trust-root.js",
+    "axr_verify.py",
+    "AXR-SPEC-0.2.md",
+    "AXR-SPEC-0.3.md",
+    "COMPLIANCE.md",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node run-tests.js",
+    "test:js": "node run-tests.js",
+    "test:py": "node axr-crossverify-test.js",
+    "verify": "node axr-verify.js",
+    "anchor": "node axr-anchor.js",
+    "monitor": "node axr-monitor.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}
