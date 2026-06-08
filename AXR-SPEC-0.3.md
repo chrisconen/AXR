@@ -1115,6 +1115,14 @@ honestly rather than implied to be finished.
   signature, the chain, or an already-anchored inclusion proof. `redactable_root`
   is signed; the cleartext detail is excluded from signature/chain/leaf hashing.
   Verifier check 13. §15.2.
+- **Added.** Side-effect attestation (N1 mitigation): a signed `side_effects[]`
+  array binding a claim to an external system's record (recheckable), with
+  optional provider co-signature (attested). Verifier check 14. §15.1.
+- **Hardened.** Canonicalization to RFC 8785 (JCS) determinism with explicit
+  guards (throws on NaN/Infinity/undefined/bigint/non-plain objects instead of
+  silent corruption); cross-implementation byte vectors pinned.
+- **Added.** Adversarial test matrix: a valid anchored log mutated 15 ways, all
+  rejected by the verifier (systematic proof of the tamper-evident claim).
 - **Added.** §15 Future directions: multi/side-effect/receiver attestation (A3),
   selective disclosure beyond redaction (B), monitor economics with the
   public-anchor nuance (C); and a `COMPLIANCE.md` control mapping.
@@ -1168,13 +1176,17 @@ The receipt is signed by the same party that runs the workflow. Anchoring proves
 provider sign on our behalf," but **multi-attestation** — corroborating a claim
 with signers the operator does not control, in increasing order of cost:
 
-- **Side-effect attestation (cheapest, highest leverage).** The external service
-  the agent actually used emits its own signed evidence, which the receipt
-  *references*: the calendar API's event id, the payment processor's reference,
-  the email provider's send log. This needs no new trust party — it reuses
-  attestations that already exist — and directly narrows N1 by tying the receipt
-  to an independently-recorded side effect. A `side_effects` field carrying these
-  references (and their hashes) is the likely 0.4 addition.
+- **Side-effect attestation (cheapest, highest leverage). IMPLEMENTED (reference).** The external
+  service the agent actually used emits its own evidence, which the receipt
+  *references* via a signed `side_effects[]` array: the calendar API's event id,
+  the payment processor's reference, the email provider's send log — plus a hash
+  of the provider's response so an auditor can independently re-fetch and compare
+  (recheckable). When the provider co-signs the entry with its own key
+  (`attestSideEffect`), the event is cryptographically bound to a party other than
+  the operator (attested). `side_effects` is part of the signed receipt; verifier
+  check 14; tested in `axr-sideeffect-test.js`. The key→provider identity bootstrap
+  (§8) is the remaining gap. This needs no new trust party for the recheckable
+  level — it reuses attestations that already exist — and directly narrows N1.
 - **Receiver attestation.** For decisions with an online counterparty, the
   receiver counter-signs "I received decision X." Strong for that subset; not
   universal (many decisions have no online receiver; the receiver may collude or

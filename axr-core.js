@@ -31,15 +31,48 @@ const AXR_INPUT_KEY = '__axr_input';
 // A generator innen tolti a receipt 'generation' blokkjat (spec 5.3).
 const AXR_GEN_KEY = '__axr_gen';
 
-// ── Determinisztikus JSON szerializalas ────────────────────────────────────────
-// A hash es az alairas CSAK akkor reprodukalhato, ha a kulcsok sorrendje fix.
-// JSON.stringify nem garantalja ezt mely objektumoknal, ezert sajat szerializalo.
+// ── Determinisztikus JSON szerializalas (RFC 8785 / JCS szellemeben) ───────────
+// A hash es az alairas CSAK akkor reprodukalhato, ha a szerializalas BAJTRA
+// azonos minden implementacioban (a "barki, barmely nyelven ellenorizheti" allitas
+// ezen all vagy bukik). Szabalyok:
+//   - objektum-kulcsok rendezese UTF-16 code unit szerint (JS String#sort default),
+//     ami megegyezik az RFC 8785 kulcs-rendezesevel;
+//   - szamok az ECMAScript Number->String szerint (amit az RFC 8785 atvesz);
+//   - tomb-sorrend valtozatlan; null/true/false/string a JSON szerint.
+//
+// GUARDOK (a csendes korrupcio ellen): a JSON.stringify a NaN/Infinity erteket
+// nemán "null"-la, az undefined-ot pedig kihagyja/„undefined"-da alakitja - ez
+// kulonbozo szemantikat azonos (vagy ervenytelen) bajtokra kepezne. Ezert ezeket
+// EXPLICIT eldobjuk, nem szerializaljuk. Igy az alairas sosem fed eltero jelentest.
+// Megj.: ezek a guardok a MEGLEVO, ervenyes (string/veges-szam/bool/null) receiptek
+// kimenetet NEM valtoztatjak - csak a korabban is hibas eseteket teszik hangossa.
 function canonicalize(value) {
+  if (value === undefined) {
+    throw new Error('canonicalize: undefined nem szerializalhato determinisztikusan');
+  }
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    throw new Error('canonicalize: nem-veges szam (NaN/Infinity) nem szerializalhato');
+  }
+  if (typeof value === 'bigint') {
+    throw new Error('canonicalize: bigint nem tamogatott');
+  }
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    throw new Error('canonicalize: ' + typeof value + ' nem szerializalhato');
+  }
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
+    // tomb-elemek: az undefined/function/symbol elemet a JSON null-na alakitja;
+    // mi ezt is hangossa tesszuk (rekurzio dob), hogy ne legyen rejtett null.
     return '[' + value.map(canonicalize).join(',') + ']';
+  }
+  // csak sima (plain) objektumot fogadunk el: Date, Map, RegExp stb. tiltott,
+  // mert a JSON-reprezentaciojuk nem egyertelmu/nem korrektul rekonstrualhato.
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== null && proto !== Object.prototype) {
+    throw new Error('canonicalize: csak sima objektum engedelyezett (' +
+      (value.constructor && value.constructor.name || 'ismeretlen') + ' tiltott)');
   }
   const keys = Object.keys(value).sort();
   return '{' + keys.map(k => JSON.stringify(k) + ':' + canonicalize(value[k])).join(',') + '}';
@@ -452,6 +485,68 @@ function verifyRedactable(receipt) {
   return { ok: problems.length === 0, problems, applicable: true };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.4 - Side-effect attestation (N1 mitigacio: "az operator a sajatjat irja ala")
+// ═══════════════════════════════════════════════════════════════════════════════
+// Az anchoring idot/sorrendet bizonyit, igazsagot nem (N1). A side-effect
+// attestation a receipt allitasat egy KULSO rendszer sajat rekordjahoz koti: a
+// "Create Booking" lepes nem csak azt mondja "letrehoztam a foglalast", hanem
+// rogziti a kulso rendszer sajat azonositojat (reference) es a valaszanak hashet
+// (evidence_hash). Egy auditor ezt FUGGETLENUL ujra le tudja kerdezni es osszevetni.
+//
+// Ket szint:
+//   - recheckable (attestation nelkul): a kulso referencia + valasz-hash alapjan
+//     egy auditor ujra-ellenorizheti. NEM onmagat bizonyito, de fuggetlenul
+//     ellenorizheto - ez az oszinte N1-mersekles.
+//   - attested (provider co-sign): ha a kulso szolgaltato sajat kulccsal alairja a
+//     side-effect bejegyzest, az KRIPTOGRAFIAILAG koti az esemenyt egy az operatortol
+//     fuggetlen felhez. (A kulcs->provider azonossag bootstrapje kulon kerdes, lasd §8.)
+//
+// A side_effects mezo az ALAIRT receipt resze (a leaf/lanc/alairas fedi), ezert
+// onmagaban tamper-evidens; az attestation ezen FELUL provider-szinten is verifikal.
+
+// Egy side-effect bejegyzes provider-alairasa (co-sign). A providerPubPem belekerul
+// az attestationbe, hogy az ellenorzes onellatu legyen.
+function attestSideEffect(entry, providerPrivPem, providerPubPem) {
+  const base = { ...entry };
+  delete base.attestation;
+  const sig = crypto.sign(null, Buffer.from(canonicalize(base), 'utf8'),
+    crypto.createPrivateKey(providerPrivPem)).toString('base64');
+  return { ...base, attestation: { algorithm: 'ed25519', public_key: providerPubPem, signature: sig } };
+}
+
+// Egy side-effect bejegyzes ellenorzese: strukturalis + (ha van) provider-alairas.
+// -> { ok, problems, attested }
+function verifySideEffect(entry) {
+  const problems = [];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return { ok: false, problems: ['a side-effect bejegyzes nem objektum'], attested: false };
+  }
+  for (const f of ['type', 'provider', 'reference']) {
+    if (typeof entry[f] !== 'string' || !entry[f]) problems.push(`hianyzo/ures mezo: ${f}`);
+  }
+  const eh = entry.evidence_hash === undefined ? null : entry.evidence_hash;
+  if (!(eh === null || (typeof eh === 'string' && /^sha256:[0-9a-f]{64}$/.test(eh)))) {
+    problems.push('evidence_hash rossz formatumu (sha256:... vagy null)');
+  }
+  let attested = false;
+  if (entry.attestation) {
+    const a = entry.attestation;
+    if (a.algorithm !== 'ed25519' || !a.public_key || !a.signature) {
+      problems.push('attestation hianyos (algorithm/public_key/signature)');
+    } else {
+      const base = { ...entry }; delete base.attestation;
+      try {
+        const ok = crypto.verify(null, Buffer.from(canonicalize(base), 'utf8'),
+          crypto.createPublicKey(a.public_key), Buffer.from(a.signature, 'base64'));
+        if (!ok) problems.push('a provider-attestation alairasa ERVENYTELEN');
+        else attested = true;
+      } catch (e) { problems.push('attestation ellenorzes hiba: ' + e.message); }
+    }
+  }
+  return { ok: problems.length === 0, problems, attested };
+}
+
 module.exports = {
   AXR_VERSION,
   AXR_INPUT_KEY,
@@ -483,5 +578,8 @@ module.exports = {
   redactableLeaf,
   buildRedactable,
   redactField,
-  verifyRedactable
+  verifyRedactable,
+  // 0.4 side-effect attestation
+  attestSideEffect,
+  verifySideEffect
 };

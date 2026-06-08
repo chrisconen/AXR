@@ -21,6 +21,8 @@
 //   12. anchor cross-check (offline: explicit ANCHOR_UNVERIFIED jelzes)
 //   13. redactable commitment integritas (0.4): a mezo-fa gyokere == redactable_root,
 //       a jelenlevo mezok a sozott leaf_hash-ukkel; torolt mezo cleartext nelkul is ervenyes
+//   14. side-effect attestation (0.4, N1): a side_effects bejegyzesek jol-formaltak,
+//       a provider-attestation (ha van) alairasa verifikal; attestation nelkul recheckable
 //
 // VERZIO-KEZELES:
 //   A verifier a receipt sajat axr_version mezoje szerint agazik el. A regi 0.1/0.2
@@ -275,6 +277,29 @@ for (const r of receipts) {
   redactedFieldCount += fields.filter(f => f.redacted || f.value === undefined).length;
 }
 
+// ── 14. Side-effect attestation (0.4) - N1 mitigacio ───────────────────────────
+// Ahol van side_effects, ott minden bejegyzes legyen jol-formalt, es ha provider-
+// attestationt hordoz, az alairasa verifikaljon. Az attestation nelkuli bejegyzes
+// nem hiba: auditor altal fuggetlenul ujra-ellenorizheto (recheckable) - ez az
+// oszinte N1-mersekles, nem onmagat bizonyito allitas.
+let sideEffectCount = 0, attestedCount = 0, recheckableCount = 0;
+for (const r of receipts) {
+  if (!Array.isArray(r.side_effects)) continue;
+  for (const entry of r.side_effects) {
+    sideEffectCount++;
+    const res = core.verifySideEffect(entry);
+    for (const p of res.problems) {
+      problem(`receipt ${r.receipt_id}: side-effect (${entry && entry.type}) - ${p}`);
+    }
+    if (res.attested) attestedCount++;
+    else if (res.ok) {
+      recheckableCount++;
+      notice(`receipt ${r.receipt_id}: side-effect "${entry.type}" @ ${entry.provider} (ref ${entry.reference}) ` +
+             `- provider-attestation nelkul: auditor altal fuggetlenul ujra-ellenorizheto (recheckable, nem onmagat bizonyito)`);
+    }
+  }
+}
+
 // ── STH / anchor fajlok betoltese (opcionalis) ─────────────────────────────────
 function loadJsonl(path, label) {
   if (!path) return null;
@@ -362,6 +387,9 @@ if (sths.length || anchored || pending) {
 }
 if (redactableCount) {
   console.log(`Redactable: ${redactableCount} receipt commitmenttel, ${redactedFieldCount} torolt mezo (a commitment es az alairas ep)`);
+}
+if (sideEffectCount) {
+  console.log(`Side-effect: ${sideEffectCount} bejegyzes (${attestedCount} provider-attesztalt, ${recheckableCount} auditor altal ujra-ellenorizheto)`);
 }
 console.log('-'.repeat(72));
 for (const wf of workflows) {

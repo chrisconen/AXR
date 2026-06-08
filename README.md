@@ -132,6 +132,29 @@ const erased = core.redactField(receipt, 'generation.prompt'); // GDPR erasure
 
 Demonstrated end-to-end in `axr-redactable-test.js`: build → anchor → erase the prompt → the log (with anchors) still verifies, and the cleartext PII is gone. This is the buildable answer to the prompt-retention/GDPR weakness; selective disclosure (SD-JWT/BBS+) and ZKPs are the next layer beyond it.
 
+### Side-effect attestation (0.4) — narrowing N1 ("operator signs its own homework")
+
+Anchoring proves *time and order*, not *truth at signing* (N1). Side-effect attestation binds a receipt's claim to an **external system's own record** so it can be checked independently. A state-changing step (e.g. `Create Booking`) carries a signed `side_effects[]` array:
+
+```json
+"side_effects": [
+  { "type": "calendar.event.created", "provider": "google-calendar",
+    "reference": "evt_abc123", "evidence_hash": "sha256:...", "occurred_at": "..." }
+]
+```
+
+Two levels:
+- **Recheckable** (no attestation): the external reference + a hash of the provider's response let an **auditor independently re-fetch and compare**. Honest framing — not self-proving, but independently checkable.
+- **Attested** (provider co-sign): the external service signs the entry with its own key (`attestSideEffect`), cryptographically binding the event to a party **other than the operator**.
+
+`side_effects` is part of the signed receipt (so it is tamper-evident and anchored); the optional provider attestation verifies on top. Verifier check 14; tested in `axr-sideeffect-test.js`. The key→provider identity bootstrap is the remaining gap (§8).
+
+### Determinism and adversarial testing
+
+The "anyone can verify, in any language" claim rests on **byte-identical canonicalization**. `core.canonicalize` follows RFC 8785 (JCS) key ordering (UTF-16 code units) and ECMAScript number formatting, and **throws** on `NaN`/`Infinity`/`undefined`/`bigint`/non-plain objects rather than silently corrupting them (which `JSON.stringify` would). Cross-implementation byte vectors are pinned in `axr-canonical-test.js`.
+
+`axr-adversarial-test.js` proves the central "tamper-evident" claim systematically: it builds one valid, anchored, generative+redactable log and applies **15 distinct mutations** (body tamper, step deletion, signature swap, STH drop, inclusion-proof tamper, redactable-value tamper, wrong-key resign, evidence-graph break, chain/step_chain tamper, STH tamper, …) — the verifier rejects **all 15**, and the unmodified control passes.
+
 ---
 
 ## Integration into an n8n workflow
@@ -246,10 +269,10 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 
 | File | Description |
 |------|-------------|
-| `axr-core.js` | Shared library: canonicalization, SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree, inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`) |
+| `axr-core.js` | Shared library: canonicalization (RFC 8785/JCS, guarded), SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree, inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`), side-effect attestation (`attestSideEffect`, `verifySideEffect`) |
 | `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
-| `axr-verify.js` | Standalone verifier: `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]` |
+| `axr-verify.js` | Standalone verifier (checks 1–14): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]` |
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back |
 | `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`) |
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
@@ -257,6 +280,9 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 | `axr-monitor-test.js` | **0.3:** monitor test (equivocation, truncation, root-mismatch, bad signature, journal compare) |
 | `axr-generative-test.js` | **0.3:** generative-step end-to-end test (generator → sidecar → verifier → monitor) |
 | `axr-redactable-test.js` | **0.4:** redactable-receipts test (build → anchor → GDPR erase → still verifies; tamper-fails) |
+| `axr-sideeffect-test.js` | **0.4:** side-effect attestation test (recheckable + provider-attested; tamper-fails) |
+| `axr-canonical-test.js` | Canonicalization (RFC 8785/JCS) byte vectors, determinism, and guard tests |
+| `axr-adversarial-test.js` | Systematic tamper matrix: 15 mutations of a valid anchored log, all rejected |
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity); §15 future directions (0.4+) |
 | `COMPLIANCE.md` | Technical-control mapping to EU AI Act Art. 12 / GDPR (informational, not legal advice) |
