@@ -258,7 +258,8 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 | `axr-generative-test.js` | **0.3:** generative-step end-to-end test (generator → sidecar → verifier → monitor) |
 | `axr-redactable-test.js` | **0.4:** redactable-receipts test (build → anchor → GDPR erase → still verifies; tamper-fails) |
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
-| `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity) |
+| `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity); §15 future directions (0.4+) |
+| `COMPLIANCE.md` | Technical-control mapping to EU AI Act Art. 12 / GDPR (informational, not legal advice) |
 
 ---
 

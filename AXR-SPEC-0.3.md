@@ -1108,6 +1108,17 @@ honestly rather than implied to be finished.
 
 ## 14. Changelog
 
+### 0.4 (prototype) — 2026-06-08
+
+- **Added.** Redactable receipts: field-level salted Merkle commitments so a
+  sensitive field's cleartext can be erased (GDPR Art. 17) without breaking the
+  signature, the chain, or an already-anchored inclusion proof. `redactable_root`
+  is signed; the cleartext detail is excluded from signature/chain/leaf hashing.
+  Verifier check 13. §15.2.
+- **Added.** §15 Future directions: multi/side-effect/receiver attestation (A3),
+  selective disclosure beyond redaction (B), monitor economics with the
+  public-anchor nuance (C); and a `COMPLIANCE.md` control mapping.
+
 ### 0.3 — 2026-06-06
 
 - **Corrected.** Tagline and trust framing: from the misleading "HTTPS … signs
@@ -1140,6 +1151,96 @@ honestly rather than implied to be finished.
 
 - Initial pilot: step + workflow receipts, two-level chaining, Ed25519, SHA-256,
   canonical serialization, n8n Code-node integration.
+
+---
+
+## 15. Future directions (0.4+)
+
+0.3 closed the *self-signed log* gap with independent anchoring. Honest external
+review then surfaced three weaknesses that anchoring does **not** close. This
+section records them and the intended direction for each, so the boundary of the
+current design is explicit and the roadmap is on the record rather than implied.
+
+### 15.1 The operator still signs (A3 / N1)
+
+The receipt is signed by the same party that runs the workflow. Anchoring proves
+*time and order*, not *truth at signing* (N1). The direction is **not** "let the
+provider sign on our behalf," but **multi-attestation** — corroborating a claim
+with signers the operator does not control, in increasing order of cost:
+
+- **Side-effect attestation (cheapest, highest leverage).** The external service
+  the agent actually used emits its own signed evidence, which the receipt
+  *references*: the calendar API's event id, the payment processor's reference,
+  the email provider's send log. This needs no new trust party — it reuses
+  attestations that already exist — and directly narrows N1 by tying the receipt
+  to an independently-recorded side effect. A `side_effects` field carrying these
+  references (and their hashes) is the likely 0.4 addition.
+- **Receiver attestation.** For decisions with an online counterparty, the
+  receiver counter-signs "I received decision X." Strong for that subset; not
+  universal (many decisions have no online receiver; the receiver may collude or
+  be absent).
+- **Runtime attestation (TEE).** A trusted execution environment attests that
+  the receipt was produced by the expected code, moving the trust root off the
+  operator. Heaviest; a later option, schema-compatible but unspecified here.
+
+The honest framing: AXR cannot make truth-at-signing free, but it can raise the
+cost of an undetectable lie by requiring **more independent signers on the events
+that matter**.
+
+### 15.2 Prompt retention and GDPR — redactable receipts (implemented), then selective disclosure
+
+EU enterprise prompts routinely contain personal data, which collides with the
+append-only design and the **GDPR right to erasure (Art. 17)**.
+
+- **Implemented in the 0.4 prototype: field-level redactable receipts.** Sensitive
+  fields are committed through a per-field **salted** Merkle tree whose root
+  (`redactable_root`) is signed; the cleartext detail is excluded from the
+  signature, the chain hash, and the leaf hash. A field's cleartext can therefore
+  be **erased** later (drop value + salt, keep the leaf hash) while the signature,
+  the chain, and the already-anchored inclusion proof all remain valid. The salt
+  makes a redacted field's hash non-brute-forceable. (`buildRedactable`,
+  `redactField`, `verifyRedactable`; verifier check 13; `axr-redactable-test.js`.)
+- **Next layer: selective disclosure and ZK.** SD-JWT / BBS+-style signatures
+  would allow revealing only a subset of claims while preserving integrity and
+  unlinkability; zero-knowledge proofs would allow proving a property of the
+  prompt ("contained no PII per classifier X", "followed policy Y") without
+  revealing it. These are heavier and intentionally beyond the 0.4 prototype, but
+  the redactable-field model is the foundation they build on.
+
+### 15.3 Monitor economics
+
+Certificate Transparency works because many well-resourced monitors watch a
+*public commons* of certificates. AXR's logs are per-tenant and largely private,
+so the naïve reading is "who will run monitors?" Two corrections narrow the
+problem:
+
+- **Public anchoring reduces the monitor count needed.** Because STH roots are
+  committed to a public, append-only ledger (OpenTimestamps/Bitcoin), the
+  *timestamp and append-only* properties (G4/G5) lean on the ledger itself as the
+  always-on witness. Monitors are mainly needed for **equivocation** (G6), and
+  even that is bounded when STH heads are publicly anchored.
+- **Incentive-aligned operators exist.** The **customer** (`on_behalf_of`) has the
+  strongest incentive and is the default monitor ("bring your own monitor"). An
+  **insurer** underwriting agent errors can require monitoring as a policy
+  condition — a clean commercial wedge. **Auditors/regulators** verify
+  episodically at audit time and need not run continuous monitors thanks to the
+  public anchor.
+
+The open part is a lightweight **gossip** mechanism: each monitor publishes the
+STH head it witnessed to a small shared registry, so equivocation across private
+views becomes catchable without a CT-scale monitor population. This is the likely
+0.4+ research item for this axis.
+
+### 15.4 Positioning (non-normative)
+
+AXR is **infrastructure, not a product**: an SDK + a managed transparency service
++ a compliance view, with the protocol open (the Sigstore model). Its defensible
+claim is not novel cryptography but being *early and credible* in a space the EU
+AI Act (Art. 12 record-keeping/traceability for high-risk systems) is making
+near-mandatory. See `COMPLIANCE.md` for the control mapping (a technical-control
+mapping, not legal advice). The standing platform risk — a model vendor shipping a
+similar standard — is mitigated by aligning with in-toto/Sigstore now (§12) so AXR
+maps onto such a standard rather than competing with it.
 
 ---
 
