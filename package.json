@@ -1,6 +1,6 @@
 {
   "name": "axr",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Agent Execution Receipt - tamper-evident, cryptographically signed execution records for automated workflows and AI agents.",
   "license": "MIT",
   "author": "Conen Digital",
@@ -40,8 +40,13 @@
     "axr_verify.py",
     "AXR-SPEC-0.2.md",
     "AXR-SPEC-0.3.md",
+    "AXR-SPEC-0.4.md",
     "COMPLIANCE.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
     "LICENSE",
+    "CHANGELOG.md",
     "README.md"
   ],
   "scripts": {

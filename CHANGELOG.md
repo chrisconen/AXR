@@ -4,6 +4,40 @@ All notable changes to AXR are documented here. The project follows the
 spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring,
 0.4 redactable / side-effect / trust-root).
 
+## [0.4.1] - 2026-06
+
+Project build-out: closed a hidden-test integrity gap, implemented the feature it
+covered, and added the governance/security layer expected of a published
+cryptographic project. No change to the 0.2 wire format; all roots remain
+byte-identical and the cross-implementation parity holds.
+
+### Added
+
+- **Incremental anchoring (MMR).** `core.mmrAppend` / `mmrRoot` / `mmrValid`, and
+  an `anchor-state.json` cache in `runAnchor`: the sidecar appends only new leaves
+  to a stored peak set instead of recomputing the whole Merkle tree each run
+  (O(log n) per leaf). The MMR root is byte-identical to `merkleRootFromLeaves`
+  for every n (proved n=1..40 in `axr-incremental-test.js`). A corrupt or stale
+  cache fails an O(log n) structural check and triggers a from-scratch rebuild, so
+  it can only cost time, never correctness. This implements the feature that
+  `axr-incremental-test.js` was added for but which had no implementation.
+- **Test auto-discovery.** `run-tests.js` now globs every `axr-*-test.js`, so a new
+  test file is included in `npm test` and CI automatically — no hand-maintained
+  list, and no test can silently escape CI (the root cause of the previously
+  hidden, failing incremental test).
+- **Governance and security.** `SECURITY.md` (responsible disclosure, supported
+  versions, in/out-of-scope), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`,
+  `.editorconfig`, GitHub issue/PR templates, and `dependabot.yml`
+  (github-actions). License and zero-dependency badges in the README.
+- **`AXR-SPEC-0.4.md`** — specification for the 0.4 layer (redactable, side-effect,
+  trust root, key separation, incremental anchoring, strict mode), matching the
+  0.2/0.3 spec bar.
+
+### Fixed
+
+- `axr-incremental-test.js` was committed red and excluded from CI (it tested an
+  unimplemented MMR feature). It is now green and auto-discovered.
+
 ## [0.4.0] - 2026-06
 
 Hardening pass. No change to the 0.2 wire format or to any existing receipt's

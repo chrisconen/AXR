@@ -1,0 +1,8 @@
+# AXR has zero runtime dependencies; the only thing to keep current is the
+# GitHub Actions used in CI.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"

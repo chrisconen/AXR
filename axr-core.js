@@ -329,6 +329,51 @@ function merkleRootFromLeaves(leafHashes) {
   return _mthRange(leafHashes, 0, leafHashes.length);
 }
 
+// ── Inkrementalis Merkle (MMR / CT-stilus, RFC 6962-kompatibilis) ──────────────
+// Az RFC 6962 fa balrol jobbra perfekt reszfakra ("peaks") bomlik, melyek meretei
+// n binaris alakjat koevetik (legnagyobb balra). Egy uj level hozzaadasa egy
+// binaris-szamlalo-szeru osszevonas: O(log n) muvelet es O(log n) tarolas - nem
+// kell minden horgonyzaskor a teljes fat nullarol ujraszamolni.
+//
+// A gyoker (mmrRoot) a peakeket JOBBROL hajtja ossze, ami pontosan az RFC 6962
+// MTH rekurzio (nodeHash(MTH(k), MTH(n-k)), k = legnagyobb 2-hatvany < n). Ezert
+// mmrRoot BYTE-AZONOS a merkleRootFromLeaves-szel MINDEN n-re (nem csak 2-hatvany
+// hatarokon). Ezt az axr-incremental-test.js n=1..40-ig bizonyitja.
+//
+// Egy peak: { hash, size }, ahol size mindig 2-hatvany. A peaks tomb balrol
+// (legregebbi/legnagyobb) jobbra (legujabb/legkisebb) rendezett, JSON-szerializalhato.
+function mmrAppend(peaks, leafHashStr) {
+  const out = peaks.slice();
+  let cur = { hash: leafHashStr, size: 1 };
+  while (out.length && out[out.length - 1].size === cur.size) {
+    const left = out.pop();
+    cur = { hash: nodeHash(left.hash, cur.hash), size: left.size * 2 };
+  }
+  out.push(cur);
+  return out;
+}
+function mmrRoot(peaks) {
+  if (!peaks.length) return _toHashStr(_sha256Bytes(Buffer.alloc(0)));
+  let acc = peaks[peaks.length - 1].hash;
+  for (let i = peaks.length - 2; i >= 0; i--) acc = nodeHash(peaks[i].hash, acc);
+  return acc;
+}
+// Egy peaks-allapot strukturalis ervenyessege egy adott levelszamhoz: a meretek
+// 2-hatvanyok, szigoruan csokkenok, es osszeguk a deklaralt levelszam. Ezzel egy
+// serult/hamis cache (pl. leaf_count=999, peaks=[]) olcson (O(log n)) kiszurheto,
+// a teljes fa ujraszamolasa nelkul.
+function mmrValid(peaks, leafCount) {
+  if (!Array.isArray(peaks) || !Number.isInteger(leafCount) || leafCount < 0) return false;
+  let sum = 0, prev = Infinity;
+  for (const p of peaks) {
+    if (!p || typeof p.hash !== 'string' || !Number.isInteger(p.size) || p.size < 1) return false;
+    if ((p.size & (p.size - 1)) !== 0) return false; // 2-hatvany?
+    if (p.size >= prev) return false;                // szigoruan csokkeno?
+    prev = p.size; sum += p.size;
+  }
+  return sum === leafCount;
+}
+
 // ── Inclusion proof generalas (RFC 6962 PATH) ──────────────────────────────────
 // Visszaadja a testver-hashek listajat a leveltol a gyokerig (string-tomb).
 // Indextartomany-alapu (slice nelkul), a gyoker-szamolassal azonos split-logikaval.
@@ -670,6 +715,9 @@ module.exports = {
   largestPowerOfTwoLessThan,
   merkleRoot,
   merkleRootFromLeaves,
+  mmrAppend,
+  mmrRoot,
+  mmrValid,
   inclusionProof,
   rootFromInclusionProof,
   verifyInclusion,

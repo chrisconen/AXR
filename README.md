@@ -1,6 +1,8 @@
 # Agent Execution Receipt (AXR)
 
 [![CI](https://github.com/chrisconen/AXR/actions/workflows/ci.yml/badge.svg)](https://github.com/chrisconen/AXR/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](package.json)
 
 A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
 
@@ -342,7 +344,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 
 | File | Description |
 |------|-------------|
-| `axr-core.js` | Shared library: canonicalization (RFC 8785/JCS, guarded), SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree (slice-free index-range), inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`), side-effect attestation (`attestSideEffect`, `verifySideEffect`), trust root (`buildTrustRoot`, `verifyTrustRoot`, `trustRootHasKey`) |
+| `axr-core.js` | Shared library: canonicalization (RFC 8785/JCS, guarded), SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree (slice-free index-range), inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`), side-effect attestation (`attestSideEffect`, `verifySideEffect`), trust root (`buildTrustRoot`, `verifyTrustRoot`, `trustRootHasKey`), incremental Merkle / MMR (`mmrAppend`, `mmrRoot`, `mmrValid`) |
 | `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
 | `axr-verify.js` | Standalone verifier (checks 1–14): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]`; **0.4 flags:** `--strict`, `--sth-key`, `--trust-root`, `--online` |
@@ -362,6 +364,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-trustroot-test.js` | **0.4:** trust-root test — N1 closure (self-attested key rejected, real provider key accepted, tamper-proof allowlist, end-to-end `--trust-root`) |
 | `axr-strict-test.js` | **0.4:** `--strict` mode test — soft signals pass by default, become errors under strict |
 | `axr-keysep-test.js` | **0.4:** key-role separation test — STH key distinct from receipt key (`--sth-key`) |
+| `axr-incremental-test.js` | **0.4:** incremental anchoring (MMR) test — root byte-identical to from-scratch (n=1..40), multi-run cache, corrupt-cache rebuild |
 | `run-tests.js` | Unified test runner (`npm test`) — runs every suite, aggregates exit code for CI |
 | `package.json` | Package metadata, `npm test` wiring, zero runtime dependencies |
 | `.github/workflows/ci.yml` | CI matrix (Node 18/20/22 x Python 3.10/3.11/3.12) running the full suite incl. cross-impl parity |
@@ -369,6 +372,10 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `CHANGELOG.md` | Version history, including the 0.4 hardening pass |
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity); §15 future directions (0.4+) |
+| `AXR-SPEC-0.4.md` | 0.4 specification (redactable, side-effect, trust root, key separation, incremental anchoring, strict mode) |
+| `SECURITY.md` | Responsible-disclosure policy and supported versions |
+| `CONTRIBUTING.md` | Contribution guide (zero-dep, frozen wire format, tests-first) |
+| `CODE_OF_CONDUCT.md` | Contributor Covenant 2.1 |
 | `COMPLIANCE.md` | Technical-control mapping to EU AI Act Art. 12 / GDPR (informational, not legal advice) |
 
 ---

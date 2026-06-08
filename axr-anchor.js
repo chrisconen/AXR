@@ -54,6 +54,17 @@ function atomicWriteJsonl(p, objs) {
 }
 function sibling(p, name) { return path.join(path.dirname(path.resolve(p)), name); }
 
+// ── anchor-state.json cache (inkrementalis Merkle allapot) ─────────────────────
+function readJson(p) {
+  if (!p || !fs.existsSync(p)) return null;
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; }
+}
+function atomicWriteJson(p, obj) {
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj));
+  fs.renameSync(tmp, p);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Backendek - mindegyik egy STH-gyokeret kap, es egy anchor-rekordot ad vissza
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -179,8 +190,22 @@ async function runAnchor(opts) {
     return { created: false, reason: 'nincs uj level a horgonyzashoz', treeSize: leaves.length, coveredSize };
   }
 
-  // 1. Uj STH a teljes jelenlegi fa felett, az elozohoz lancolva
-  const rootHash = axr.merkleRootFromLeaves(leafHashes);
+  // 1. Uj STH a teljes jelenlegi fa felett, az elozohoz lancolva.
+  // A gyokeret INKREMENTALISAN szamoljuk az anchor-state.json cache-bol: csak az
+  // uj leveleket fuzzuk a tarolt peakekhez (O(uj_levelek + log n)), nem szamoljuk
+  // ujra a teljes fat. Ha a cache hianyzik / serult / nem illik a jelenlegi
+  // levelszamhoz (pl. tobb levelet allit, mint amennyi van), NULLAROL ujraepitunk
+  // - a vegeredmeny byte-azonos a from-scratch gyokerrel (mmrRoot == merkleRootFromLeaves).
+  const statePath = opts.statePath || sibling(receiptsPath, 'anchor-state.json');
+  const cache = readJson(statePath);
+  let peaks = [];
+  let from = 0;
+  if (cache && axr.mmrValid(cache.peaks, cache.leaf_count) && cache.leaf_count <= leafHashes.length) {
+    peaks = cache.peaks;
+    from = cache.leaf_count;
+  }
+  for (let i = from; i < leafHashes.length; i++) peaks = axr.mmrAppend(peaks, leafHashes[i]);
+  const rootHash = axr.mmrRoot(peaks);
   const sthBody = {
     axr_version: '0.3', record_type: 'sth', log_id: logId,
     tree_size: leaves.length, root_hash: rootHash, timestamp: now(),
@@ -188,6 +213,8 @@ async function runAnchor(opts) {
   };
   sthBody.signature = axr.signReceipt(sthBody, opts.privateKeyPem);
   appendJsonl(sthPath, [sthBody]);
+  // a frissitett inkrementalis allapot perzisztalasa (atomian)
+  atomicWriteJson(statePath, { leaf_count: leaves.length, peaks, root_hash: rootHash, updated_at: now() });
 
   // 2. Backendek - a gyoker kulso lehorgonyzasa
   const anchorRecords = [];
