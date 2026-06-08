@@ -61,7 +61,7 @@ Across runs on one agent, workflow receipts chain to each other. Deletion of any
 
 ---
 
-## What 0.3 adds over 0.2 (in progress)
+## What 0.3 adds over 0.2
 
 0.2 proved a record was unmodified *since signing* — but the operator held the only key and the only log, so nothing stopped silent rewriting, backdating, or keeping two divergent logs. 0.3 introduces a party the operator does not control, turning **tamper-evident** into **tamper-detectable**. The honest analogy is Certificate Transparency, not self-signed HTTPS.
 

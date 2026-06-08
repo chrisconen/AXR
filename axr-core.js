@@ -547,6 +547,30 @@ function verifySideEffect(entry) {
   return { ok: problems.length === 0, problems, attested };
 }
 
+// ── 0.4: inkrementalis Merkle (Merkle Mountain Range) ──────────────────────────
+// A sidecar minden futaskor ujraszamolta az osszes level hashet es az egesz fat
+// (O(n^2) n futason at). Az MMR ezt O(log n)-re hozza futasonkent: a fa allapotat
+// a "csucsok" (perfekt reszfak gyokerei) listaja irja le. A teljes gyoker a csucsok
+// jobbrol-balra hajtogatasa - ez PONTOSAN az RFC 6962 MTH-t adja, igy az
+// inkrementalis gyoker bajtra egyezik a merkleRootFromLeaves-szel.
+function mmrAppend(peaks, leafHashStr) {
+  const out = peaks.map(p => ({ height: p.height, hash: p.hash }));
+  let carry = { height: 0, hash: leafHashStr };
+  while (out.length && out[out.length - 1].height === carry.height) {
+    const top = out.pop();                       // a regebbi (bal) reszfa
+    carry = { height: carry.height + 1, hash: nodeHash(top.hash, carry.hash) };
+  }
+  out.push(carry);
+  return out;
+}
+
+function mmrRoot(peaks) {
+  if (!peaks.length) return merkleRootFromLeaves([]);
+  let acc = peaks[peaks.length - 1].hash;
+  for (let i = peaks.length - 2; i >= 0; i--) acc = nodeHash(peaks[i].hash, acc);
+  return acc;
+}
+
 module.exports = {
   AXR_VERSION,
   AXR_INPUT_KEY,
@@ -574,6 +598,9 @@ module.exports = {
   verifyInclusion,
   consistencyProof,
   verifyConsistency,
+  // 0.4 inkrementalis Merkle (MMR)
+  mmrAppend,
+  mmrRoot,
   // 0.4 redactable mezok
   redactableLeaf,
   buildRedactable,

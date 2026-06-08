@@ -54,6 +54,17 @@ function atomicWriteJsonl(p, objs) {
 }
 function sibling(p, name) { return path.join(path.dirname(path.resolve(p)), name); }
 
+// Inkrementalis allapot (level-hash cache + MMR-csucsok) JSON-ban, atomi irassal.
+function loadState(p) {
+  try { return p && fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null; }
+  catch (e) { return null; }
+}
+function saveState(p, obj) {
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj));
+  fs.renameSync(tmp, p);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Backendek - mindegyik egy STH-gyokeret kap, es egy anchor-rekordot ad vissza
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -165,22 +176,43 @@ async function runAnchor(opts) {
   const logId = opts.logId || 'axr:default:v1';
   const now = opts.now || (() => new Date().toISOString());
 
+  const statePath = opts.statePath || sibling(receiptsPath, 'anchor-state.json');
   const receipts = readJsonl(receiptsPath);
   const leafIdx = [];
   receipts.forEach((r, i) => { if (LEAF_TYPES.includes(r.receipt_type)) leafIdx.push(i); });
-  const leaves = leafIdx.map(i => receipts[i]);
-  const leafHashes = leaves.map(axr.leafHash);
+  const leaves = leafIdx;                       // csak a szamossag (leaves.length) kell tovabb
 
   const sths = readJsonl(sthPath);
   const lastSth = sths.length ? sths[sths.length - 1] : null;
   const coveredSize = lastSth ? lastSth.tree_size : 0;
+
+  // Inkrementalis allapot: a mar kiszamolt level-hashek + MMR-csucsok cache-e. Igy
+  // futasonkent CSAK az uj recepteket hasheljuk, es a gyoker O(log n) (MMR), nem az
+  // egesz fa ujraepitese (ami O(n^2) lett volna n futason at).
+  let cached = loadState(statePath);
+  if (!cached || !Array.isArray(cached.leaf_hashes) || !Array.isArray(cached.peaks) ||
+      cached.leaf_hashes.length !== cached.leaf_count || cached.leaf_count > leafIdx.length) {
+    cached = { leaf_count: 0, leaf_hashes: [], peaks: [] };       // friss / inkonzisztens
+  }
+  // serult cache elleni vedelem: a cache-elt csucsok gyokere egyezzen az utolso STH-val
+  if (cached.leaf_count > 0 && lastSth && lastSth.tree_size === cached.leaf_count &&
+      axr.mmrRoot(cached.peaks) !== lastSth.root_hash) {
+    cached = { leaf_count: 0, leaf_hashes: [], peaks: [] };       // -> ujraepites nullarol
+  }
+  const leafHashes = cached.leaf_hashes.slice();
+  let peaks = cached.peaks.map(p => ({ height: p.height, hash: p.hash }));
+  for (let li = cached.leaf_count; li < leafIdx.length; li++) {
+    const h = axr.leafHash(receipts[leafIdx[li]]);
+    leafHashes.push(h);
+    peaks = axr.mmrAppend(peaks, h);
+  }
 
   if (leaves.length <= coveredSize) {
     return { created: false, reason: 'nincs uj level a horgonyzashoz', treeSize: leaves.length, coveredSize };
   }
 
   // 1. Uj STH a teljes jelenlegi fa felett, az elozohoz lancolva
-  const rootHash = axr.merkleRootFromLeaves(leafHashes);
+  const rootHash = axr.mmrRoot(peaks);
   const sthBody = {
     axr_version: '0.3', record_type: 'sth', log_id: logId,
     tree_size: leaves.length, root_hash: rootHash, timestamp: now(),
@@ -210,6 +242,9 @@ async function runAnchor(opts) {
   });
   if (anchored) atomicWriteJsonl(receiptsPath, receipts);
 
+  // inkrementalis allapot mentese (level-hashek + MMR-csucsok a kovetkezo futashoz)
+  saveState(statePath, { leaf_count: leafIdx.length, leaf_hashes: leafHashes, peaks });
+
   return {
     created: true, treeSize: leaves.length, anchored,
     sth: sthBody, anchorRecords, sthPath, anchorsPath
@@ -236,7 +271,7 @@ if (require.main === module) {
   const privateKeyPem = fs.readFileSync(keyPath, 'utf8');
   runAnchor({
     receiptsPath, privateKeyPem,
-    sthPath: flags.sth, anchorsPath: flags.anchors,
+    sthPath: flags.sth, anchorsPath: flags.anchors, statePath: flags.state,
     backends: flags.backend ? [flags.backend] : ['local'],
     logId: flags['log-id']
   }).then(res => {
