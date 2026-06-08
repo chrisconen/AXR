@@ -155,6 +155,21 @@ The "anyone can verify, in any language" claim rests on **byte-identical canonic
 
 `axr-adversarial-test.js` proves the central "tamper-evident" claim systematically: it builds one valid, anchored, generative+redactable log and applies **15 distinct mutations** (body tamper, step deletion, signature swap, STH drop, inclusion-proof tamper, redactable-value tamper, wrong-key resign, evidence-graph break, chain/step_chain tamper, STH tamper, …) — the verifier rejects **all 15**, and the unmodified control passes.
 
+### Cross-implementation verification (the CT-style proof)
+
+The credibility of Certificate Transparency came from *multiple independent implementations agreeing*. AXR ships a second, fully independent verifier in Python (`axr_verify.py`) with **zero external dependencies** — its own canonicalizer, a **pure-Python Ed25519** verifier (RFC 8032, validated against the standard test vectors), and the RFC 6962 Merkle/inclusion/consistency logic.
+
+`axr-crossverify-test.js` proves the two implementations agree:
+- **Canonicalization parity**: a battery of values (integers, floats, `1e21`, unicode, emoji, nested objects) canonicalizes to byte-identical output in JS and Python.
+- **Agreement on valid**: both verifiers accept the same anchored log (exit 0).
+- **Agreement on tampered**: both reject the same mutated logs (exit 1).
+
+```bash
+python3 axr_verify.py receipts.jsonl public-key.pem sth.jsonl anchors.jsonl
+```
+
+The Python verifier covers the cryptographic core (canonicalization, signatures, chains, Merkle proofs); the niche 0.3/0.4 checks (generative well-formedness, evidence graph, redactable, side-effect) remain the Node verifier's reference scope. The canonicalization byte-vectors (`axr-canonical-test.js`) are the cross-language conformance contract.
+
 ---
 
 ## Integration into an n8n workflow
@@ -273,6 +288,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 | `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
 | `axr-verify.js` | Standalone verifier (checks 1–14): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]` |
+| `axr_verify.py` | **Independent** zero-dependency Python verifier (own canonicalizer, pure-Python Ed25519, RFC 6962 Merkle) — cross-implementation proof |
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back |
 | `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`) |
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
@@ -283,6 +299,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly.
 | `axr-sideeffect-test.js` | **0.4:** side-effect attestation test (recheckable + provider-attested; tamper-fails) |
 | `axr-canonical-test.js` | Canonicalization (RFC 8785/JCS) byte vectors, determinism, and guard tests |
 | `axr-adversarial-test.js` | Systematic tamper matrix: 15 mutations of a valid anchored log, all rejected |
+| `axr-crossverify-test.js` | Cross-implementation test: JS vs Python canonicalization parity + verifier agreement (valid & tampered) |
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity); §15 future directions (0.4+) |
 | `COMPLIANCE.md` | Technical-control mapping to EU AI Act Art. 12 / GDPR (informational, not legal advice) |

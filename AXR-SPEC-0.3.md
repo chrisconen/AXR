@@ -1123,6 +1123,11 @@ honestly rather than implied to be finished.
   silent corruption); cross-implementation byte vectors pinned.
 - **Added.** Adversarial test matrix: a valid anchored log mutated 15 ways, all
   rejected by the verifier (systematic proof of the tamper-evident claim).
+- **Added.** Independent Python verifier (`axr_verify.py`, zero dependencies:
+  own canonicalizer, pure-Python Ed25519 per RFC 8032, RFC 6962 Merkle) and a
+  cross-implementation test proving byte-identical canonicalization and verifier
+  agreement (valid and tampered) between JS and Python — the CT-style "multiple
+  independent implementations agree" proof.
 - **Added.** §15 Future directions: multi/side-effect/receiver attestation (A3),
   selective disclosure beyond redaction (B), monitor economics with the
   public-anchor nuance (C); and a `COMPLIANCE.md` control mapping.
