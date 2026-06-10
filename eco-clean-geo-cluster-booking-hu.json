@@ -1,0 +1,860 @@
+{
+  "name": "eco-clean-geo-cluster-booking-hu",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "chris.conen@gmail.com",
+          "mode": "list",
+          "cachedResultName": "chris.conen@gmail.com"
+        },
+        "returnAll": true,
+        "options": {
+          "timeMin": "={{$json.body.date}}T00:00:00Z",
+          "timeMax": "={{$json.body.date}}T23:59:59Z",
+          "singleEvents": true,
+          "orderBy": "startTime"
+        }
+      },
+      "id": "02cbe4da-533c-484f-8b91-b32d894d1bc2",
+      "name": "Check Day Schedule",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [
+        -96,
+        -384
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "lL8o7VIX3AnLKK8m",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════════════════════\n// 🦅 NEXUS + 🐴 CLAUDE - THE BRAIN LOGIC v5.1 HU\n// ═══════════════════════════════════════════════════════════════════════════════\n// ADVANCED GEO-CLUSTER SYSTEM - TÁVOLSÁG-ALAPÚ INTELLIGENS ZÓNÁZÁS\n// \n// LOGIKA:\n// - Egy nap = egy fő régió (fizikai korlátok miatt)\n// - Zónán belül: 30 perc travel buffer\n// - Szomszédos zóna: 90 perc travel buffer\n// - Távoli zóna: TILTOTT (nem kombinálható egy napra)\n// - BALATON = külön nagy zóna (belső HU része)\n// ═══════════════════════════════════════════════════════════════════════════════\n\nconst normalizedData = $('Normalize Payload - HU').first().json;\nconst newBooking = normalizedData.body;\nconst calendarItems = $('Check Day Schedule').all();\nconst existingEvents = calendarItems.filter(item => item.json.id);\n\n// ── AXR 0.2: a node tenyleges inputja - amit a Brain VALOBAN olvas ──\nconst __axrInput = {\n  normalized_body: newBooking,\n  calendar_events: calendarItems.map(i => i.json)\n};\n\nconsole.log('🧠 Brain Logic HU v5.0 Input:', {\n    location: newBooking.location,\n    duration: newBooking.duration,\n    date: newBooking.date,\n    slotStart: newBooking.slotStartTime\n});\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// CONFIGURATION\n// ═══════════════════════════════════════════════════════════════════════════════\nconst WORK_START = \"09:00\";\nconst WORK_END = \"17:00\";\nconst SETUP_TIME = 20;\n\n// Travel buffers based on zone relationship\nconst TRAVEL_BUFFER_SAME_ZONE = 30;       // Ugyanazon zónán belül\nconst TRAVEL_BUFFER_NEIGHBOR = 90;         // Szomszédos zónák között\nconst TRAVEL_BUFFER_CROSS_BORDER = 60;     // AT-HU határ menti zónák között\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// GEO-CLUSTER DEFINITIONS v5.0 - HUNGARY + BORDER AUSTRIA\n// ═══════════════════════════════════════════════════════════════════════════════\n\nconst GEO_CLUSTERS = {\n    // ═══════════════════════════════════════════════════════════════════════════\n    // MAGYAR ZÓNÁK - AKTÍV SZOLGÁLTATÁSI TERÜLETEK\n    // ═══════════════════════════════════════════════════════════════════════════\n    \n    \"GYOR_PAPA\": {\n        name: \"Győr-Pápa régió\",\n        country: \"HU\",\n        zipPrefixes: [\"90\", \"91\"],\n        cities: [\"győr\", \"gyor\", \"pápa\", \"papa\", \"pannonhalma\", \"csorna\",\n                 \"tét\", \"tet\", \"bágyogszovát\", \"bagyogszovat\", \"bodonhely\"]\n    },\n    \n    \"SOPRON_HATARMENTI\": {\n        name: \"Sopron & Határmenti\",\n        country: \"HU\",\n        zipPrefixes: [\"94\", \"93\", \"92\"],\n        cities: [\"sopron\", \"fertőd\", \"fertod\", \"fertőrákos\", \"fertorakos\",\n                 \"nagycenk\", \"ágfalva\", \"agfalva\", \"fertőszentmiklós\", \"fertoszentmiklos\",\n                 \"hegyeshalom\", \"rajka\", \"levél\", \"level\", \"jánossomorja\", \"janossomorja\",\n                 \"mosonmagyaróvár\", \"mosonmagyarovar\", \"kapuvár\", \"kapuvar\"]\n    },\n    \n    \"SZOMBATHELY_VAS\": {\n        name: \"Szombathely & Vas megye\",\n        country: \"HU\",\n        zipPrefixes: [\"97\", \"98\", \"99\"],\n        cities: [\"szombathely\", \"kőszeg\", \"koszeg\", \"szentgotthárd\", \"szentgotthard\",\n                 \"körmend\", \"kormend\", \"csepreg\", \"sárvár\", \"sarvar\", \"celldömölk\", \"celldomolk\",\n                 \"vasvár\", \"vasvar\", \"répcelak\", \"repcelak\"]\n    },\n    \n    \"BALATON\": {\n        name: \"Balaton régió\",\n        country: \"HU\",\n        zipPrefixes: [\"82\", \"83\", \"84\", \"86\", \"87\", \"88\"],\n        cities: [\n            // Északi part\n            \"balatonfüred\", \"balatonfured\", \"tihany\", \"balatonalmádi\", \"balatonalmadi\",\n            \"révfülöp\", \"revfulop\", \"balatonkenese\", \"balatonfűzfő\", \"balatonfuzfo\",\n            \"badacsony\", \"alsóörs\", \"alsoors\", \"csopak\", \"balatonudvari\",\n            // Déli part\n            \"siófok\", \"siofok\", \"zamárdi\", \"zamardi\", \"balatonföldvár\", \"balatonfoldvar\",\n            \"balatonlelle\", \"fonyód\", \"fonyod\", \"balatonboglár\", \"balatonboglar\",\n            \"balatonszemes\", \"balatonszárszó\", \"balatonszarszo\", \"balatonmáriafürdő\",\n            // Nyugati part\n            \"keszthely\", \"hévíz\", \"heviz\", \"tapolca\", \"balatongyörök\", \"balatongyorok\",\n            \"gyenesdiás\", \"gyenesdias\", \"vonyarcvashegy\", \"badacsonytomaj\",\n            // Környék\n            \"veszprém\", \"veszprem\", \"herend\", \"ajka\", \"várpalota\", \"varpalota\",\n            \"zalaegerszeg\", \"nagykanizsa\"\n        ]\n    },\n    \n    \"SZEKESFEHERVAR\": {\n        name: \"Székesfehérvár régió\",\n        country: \"HU\",\n        zipPrefixes: [\"80\", \"81\", \"28\", \"29\", \"85\"],\n        cities: [\"székesfehérvár\", \"szekesfehervar\", \"dunaújváros\", \"dunaujvaros\",\n                 \"mór\", \"mor\", \"bicske\", \"martonvásár\", \"martonvasar\", \"velence\",\n                 \"tatabánya\", \"tatabanya\", \"tata\", \"komárom\", \"komarom\"]\n    },\n    \n    // ═══════════════════════════════════════════════════════════════════════════\n    // OSZTRÁK HATÁR MENTI ZÓNÁK (HU rendszerből elérhető)\n    // ═══════════════════════════════════════════════════════════════════════════\n    \n    \"AT_BURGENLAND_NORD\": {\n        name: \"Nordburgenland (AT)\",\n        country: \"AT\",\n        zipPrefixes: [\"24\", \"70\", \"71\"],\n        cities: [\"eisenstadt\", \"kismarton\", \"neusiedl\", \"nezsider\", \"parndorf\", \"pándorfalu\",\n                 \"kittsee\", \"mattersburg\", \"nagymarton\", \"rust\", \"mörbisch\", \"morbisch\"]\n    },\n    \n    \"AT_BURGENLAND_SUED\": {\n        name: \"Südburgenland (AT)\",\n        country: \"AT\",\n        zipPrefixes: [\"72\", \"73\", \"74\", \"75\", \"76\"],\n        cities: [\"oberwart\", \"felsőőr\", \"felsoor\", \"güssing\", \"guessing\", \"németújvár\",\n                 \"jennersdorf\", \"gyanafalva\", \"pinkafeld\", \"pinkafő\", \"pinkafo\",\n                 \"oberpullendorf\", \"felsőpulya\", \"felsopulya\"]\n    },\n    \n    // ═══════════════════════════════════════════════════════════════════════════\n    // OSZTRÁK BELSŐ ZÓNÁK (felismerés + blokkolás céljából)\n    // Ezek a zónák NEM kombinálhatók magyar zónákkal!\n    // ═══════════════════════════════════════════════════════════════════════════\n    \n    \"WIEN\": {\n        name: \"Wien & Umgebung\",\n        country: \"AT\",\n        zipPrefixes: [\"10\", \"11\", \"12\", \"13\", \"14\", \"15\", \"16\", \"17\", \"18\", \"19\",\n                      \"20\", \"21\", \"22\", \"23\", \"25\", \"26\", \"27\",\n                      \"30\", \"31\", \"32\", \"34\"],\n        cities: [\"wien\", \"vienna\", \"bécs\", \"becs\", \"schwechat\", \"mödling\", \"moedling\",\n                 \"baden\", \"wiener neustadt\", \"klosterneuburg\", \"korneuburg\", \"tulln\",\n                 \"krems\", \"st. pölten\", \"st pölten\", \"perchtoldsdorf\", \"brunn am gebirge\"]\n    },\n    \n    \"LINZ\": {\n        name: \"Linz & Oberösterreich\",\n        country: \"AT\",\n        zipPrefixes: [\"33\", \"35\", \"36\", \"37\", \"38\", \"39\",\n                      \"40\", \"41\", \"42\", \"43\", \"44\", \"45\", \"46\", \"47\", \"48\", \"49\"],\n        cities: [\"linz\", \"wels\", \"steyr\", \"amstetten\", \"gmunden\", \"bad ischl\",\n                 \"vöcklabruck\", \"voecklabruck\", \"ried im innkreis\", \"braunau\",\n                 \"leonding\", \"traun\", \"enns\", \"perg\"]\n    },\n    \n    \"GRAZ\": {\n        name: \"Graz & Steiermark\",\n        country: \"AT\",\n        zipPrefixes: [\"89\"],\n        cities: [\"graz\", \"leoben\", \"kapfenberg\", \"bruck an der mur\",\n                 \"leibnitz\", \"weiz\", \"feldbach\", \"hartberg\",\n                 \"judenburg\", \"knittelfeld\", \"liezen\"]\n    },\n    \n    \"KAERNTEN\": {\n        name: \"Kärnten\",\n        country: \"AT\",\n        zipPrefixes: [\"95\", \"96\"],\n        cities: [\"klagenfurt\", \"villach\", \"wolfsberg\", \"spittal an der drau\",\n                 \"völkermarkt\", \"voelkermarkt\", \"feldkirchen\"]\n    },\n    \n    \"WEST\": {\n        name: \"Westösterreich\",\n        country: \"AT\",\n        zipPrefixes: [\"50\", \"51\", \"52\", \"53\", \"54\", \"55\", \"56\", \"57\", \"58\", \"59\",\n                      \"60\", \"61\", \"62\", \"63\", \"64\", \"65\", \"66\", \"67\", \"68\", \"69\"],\n        cities: [\"salzburg\", \"hallein\", \"saalfelden\", \"zell am see\",\n                 \"innsbruck\", \"kufstein\", \"wörgl\", \"woergl\", \"hall in tirol\",\n                 \"bregenz\", \"dornbirn\", \"feldkirch\", \"bludenz\",\n                 \"telfs\", \"imst\", \"landeck\", \"reutte\", \"schwaz\", \"lienz\"]\n    }\n};\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// ZONE COMPATIBILITY MATRIX - Mely zónák kombinálhatók egy napon?\n// ═══════════════════════════════════════════════════════════════════════════════\n\nconst ZONE_COMPATIBILITY = {\n    // Magyar zónák - EGY NAP = EGY FŐ RÉGIÓ\n    \"GYOR_PAPA\":          [\"GYOR_PAPA\"],                    // Csak önmagával\n    \"SOPRON_HATARMENTI\":  [\"SOPRON_HATARMENTI\", \"AT_BURGENLAND_NORD\"],  // + osztrák határ\n    \"SZOMBATHELY_VAS\":    [\"SZOMBATHELY_VAS\", \"AT_BURGENLAND_SUED\"],    // + osztrák határ\n    \"BALATON\":            [\"BALATON\"],                      // Csak önmagával - nagy terület!\n    \"SZEKESFEHERVAR\":     [\"SZEKESFEHERVAR\"],               // Csak önmagával\n    \n    // Osztrák határ menti (HU rendszerből)\n    \"AT_BURGENLAND_NORD\": [\"AT_BURGENLAND_NORD\", \"SOPRON_HATARMENTI\"],\n    \"AT_BURGENLAND_SUED\": [\"AT_BURGENLAND_SUED\", \"SZOMBATHELY_VAS\"],\n    \n    // Osztrák belső - CSAK önmagukkal (HU-val NEM kompatibilis!)\n    \"WIEN\":     [\"WIEN\"],\n    \"LINZ\":     [\"LINZ\"],\n    \"GRAZ\":     [\"GRAZ\"],\n    \"KAERNTEN\": [\"KAERNTEN\"],\n    \"WEST\":     [\"WEST\"]\n};\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// HELPER FUNCTIONS\n// ═══════════════════════════════════════════════════════════════════════════════\n\nfunction extractZipCode(address) {\n    if (!address) return null;\n    const match = address.match(/\\b(\\d{4})\\b/);\n    return match ? match[1] : null;\n}\n\nfunction getCluster(address) {\n    if (!address) return \"UNKNOWN\";\n    \n    const normalized = address.toLowerCase().trim();\n    const zipCode = extractZipCode(address);\n    \n    console.log('🔍 getCluster analyzing:', { address: normalized, zipCode });\n    \n    // FONTOS: Ország detektálás először!\n    const isAustria = normalized.includes('österreich') || \n                      normalized.includes('austria') || \n                      normalized.includes(', at') ||\n                      normalized.includes(' at-') ||\n                      // Osztrák városok\n                      normalized.includes('wien') ||\n                      normalized.includes('eisenstadt') ||\n                      normalized.includes('oberwart');\n    \n    const isHungary = normalized.includes('magyarország') || \n                      normalized.includes('hungary') || \n                      normalized.includes('ungarn') ||\n                      normalized.includes(', hu') ||\n                      // Magyar városok egyértelmű jelei\n                      normalized.includes('győr') ||\n                      normalized.includes('gyor') ||\n                      normalized.includes('budapest') ||\n                      normalized.includes('balaton') ||\n                      normalized.includes('megye');\n    \n    // ELSŐ KÍSÉRLET: Városnév alapján (legmegbízhatóbb!)\n    for (const [clusterId, cluster] of Object.entries(GEO_CLUSTERS)) {\n        if (cluster.cities && cluster.cities.some(city => normalized.includes(city))) {\n            console.log(`  → Matched by city name: ${clusterId}`);\n            return clusterId;\n        }\n    }\n    \n    // MÁSODIK KÍSÉRLET: Irányítószám alapján (ország-ellenőrzéssel!)\n    if (zipCode) {\n        const prefix = zipCode.substring(0, 2);\n        \n        for (const [clusterId, cluster] of Object.entries(GEO_CLUSTERS)) {\n            if (cluster.zipPrefixes && cluster.zipPrefixes.includes(prefix)) {\n                // Ha tudjuk az országot, csak akkor fogadjuk el ha egyezik\n                if (isAustria && cluster.country === \"HU\") continue;\n                if (isHungary && cluster.country === \"AT\") continue;\n                \n                console.log(`  → Matched by ZIP prefix ${prefix}: ${clusterId}`);\n                return clusterId;\n            }\n        }\n    }\n    \n    console.log('  → No match found, returning UNKNOWN');\n    return \"UNKNOWN\";\n}\n\nfunction areZonesCompatible(zone1, zone2) {\n    if (zone1 === \"UNKNOWN\" || zone2 === \"UNKNOWN\") return true;  // Benefit of doubt\n    \n    const compatible = ZONE_COMPATIBILITY[zone1] || [];\n    return compatible.includes(zone2);\n}\n\nfunction getTravelBuffer(zone1, zone2) {\n    if (zone1 === zone2) return TRAVEL_BUFFER_SAME_ZONE;\n    \n    // Cross-border (AT-HU)\n    const z1Country = GEO_CLUSTERS[zone1]?.country;\n    const z2Country = GEO_CLUSTERS[zone2]?.country;\n    if (z1Country !== z2Country) return TRAVEL_BUFFER_CROSS_BORDER;\n    \n    // Same country, different zone = neighbor\n    return TRAVEL_BUFFER_NEIGHBOR;\n}\n\nfunction getClusterName(clusterId) {\n    return GEO_CLUSTERS[clusterId]?.name || \"Ismeretlen\";\n}\n\nfunction timeToMinutes(timeStr) {\n    const [h, m] = timeStr.split(':').map(Number);\n    return h * 60 + m;\n}\n\nfunction minutesToTime(totalMinutes) {\n    const h = Math.floor(totalMinutes / 60);\n    const m = totalMinutes % 60;\n    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;\n}\n\nfunction addMinutes(timeStr, minutesToAdd) {\n    return minutesToTime(timeToMinutes(timeStr) + minutesToAdd);\n}\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// MAIN LOGIC\n// ═══════════════════════════════════════════════════════════════════════════════\n\nconst reqCluster = getCluster(newBooking.location);\nconst serviceDuration = parseInt(newBooking.duration) || 60;\nconst totalRequiredTime = serviceDuration + SETUP_TIME;\n\nconsole.log('🗺️ Cluster Detection Result:', {\n    requestedCluster: reqCluster,\n    clusterName: getClusterName(reqCluster),\n    location: newBooking.location\n});\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// SCENARIO 1: EMPTY DAY (ANCHOR BOOKING)\n// ═══════════════════════════════════════════════════════════════════════════════\nif (existingEvents.length === 0) {\n    let startTime = newBooking.slotStartTime || \"09:00\";\n    const endTime = addMinutes(startTime, serviceDuration);\n    \n    console.log('✅ Empty day - Anchor booking for zone:', reqCluster);\n    \n    return [{\n        json: {\n            available: true,\n            status: \"ANCHOR_BOOKING\",\n            slot: {\n                date: newBooking.date,\n                startTime: startTime,\n                endTime: endTime\n            },\n            cluster: {\n                id: reqCluster,\n                name: getClusterName(reqCluster),\n                country: GEO_CLUSTERS[reqCluster]?.country || \"?\"\n            },\n            calendar: {\n                isAnchor: true,\n                dayStatus: \"EMPTY\",\n                internalEndTime: addMinutes(startTime, totalRequiredTime)\n            },\n            message: `Tökéletes! ${newBooking.date} szabad. Ön lesz az első ügyfél a ${getClusterName(reqCluster)} régióban.`,\n            booking: newBooking,\n            __axr_input: __axrInput\n        }\n    }];\n}\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// SCENARIO 2: CHECK GEO-ZONE COMPATIBILITY (EGY NAP = EGY RÉGIÓ)\n// ═══════════════════════════════════════════════════════════════════════════════\nconst firstEvent = existingEvents[0].json;\nconst eventLocation = firstEvent.location || firstEvent.summary || \"\";\nconst dayCluster = getCluster(eventLocation);\n\nconsole.log('🔍 Zone Compatibility Check:', {\n    dayCluster: dayCluster,\n    dayClusterName: getClusterName(dayCluster),\n    requestedCluster: reqCluster,\n    requestedClusterName: getClusterName(reqCluster),\n    compatible: areZonesCompatible(dayCluster, reqCluster)\n});\n\nif (!areZonesCompatible(dayCluster, reqCluster)) {\n    const dayClusterName = getClusterName(dayCluster);\n    const reqClusterName = getClusterName(reqCluster);\n    \n    console.log('❌ Zone incompatible!');\n    \n    let message = `Ez a nap már le van foglalva a \"${dayClusterName}\" régióra. Az Ön helyszíne („${reqClusterName}\") túl messze van ahhoz, hogy egy napon belül kombinálható legyen.`;\n    \n    // Special message for Balaton\n    if (reqCluster === \"BALATON\" || dayCluster === \"BALATON\") {\n        message = `A Balaton régió nagy kiterjedése miatt csak Balaton-környéki megrendelésekkel kombinálható egy napon. Kérjük válasszon másik napot!`;\n    }\n    \n    return [{\n        json: {\n            available: false,\n            error: \"ZONE_INCOMPATIBLE\",\n            message: message,\n            details: {\n                dayZone: dayCluster,\n                dayZoneName: dayClusterName,\n                requestedZone: reqCluster,\n                requestedZoneName: reqClusterName,\n                reason: \"DISTANCE_TOO_FAR\"\n            },\n            suggestion: {\n                message: \"Kérjük válasszon másik napot!\",\n                action: \"SHOW_ALTERNATIVE_DATES\"\n            },\n            __axr_input: __axrInput\n        }\n    }];\n}\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// SCENARIO 3: CHECK TIME AVAILABILITY WITH DYNAMIC TRAVEL BUFFER\n// ═══════════════════════════════════════════════════════════════════════════════\n\nconst selectedStartTime = newBooking.slotStartTime || \"09:00\";\nconst selectedStartMinutes = timeToMinutes(selectedStartTime);\n\n// Calculate appropriate travel buffer based on zones\nconst travelBuffer = getTravelBuffer(dayCluster, reqCluster);\n\nconsole.log('⏰ Time Slot Analysis:', {\n    requestedStart: selectedStartTime,\n    existingEventsCount: existingEvents.length,\n    travelBuffer: travelBuffer\n});\n\nlet actualStartTime = selectedStartTime;\nlet hasConflict = false;\n\nfor (const event of existingEvents) {\n    if (!event.json.start?.dateTime || !event.json.end?.dateTime) continue;\n    \n    const eventStart = new Date(event.json.start.dateTime);\n    const eventEnd = new Date(event.json.end.dateTime);\n    const eventStartMinutes = eventStart.getHours() * 60 + eventStart.getMinutes();\n    const eventEndMinutes = eventEnd.getHours() * 60 + eventEnd.getMinutes();\n    \n    console.log('  → Checking event:', {\n        summary: event.json.summary,\n        slot: `${minutesToTime(eventStartMinutes)} - ${minutesToTime(eventEndMinutes)}`\n    });\n    \n    // Check overlap with travel buffer\n    const requestedEnd = selectedStartMinutes + totalRequiredTime;\n    \n    if (selectedStartMinutes < eventEndMinutes + travelBuffer && \n        requestedEnd > eventStartMinutes - travelBuffer) {\n        \n        const newStart = eventEndMinutes + travelBuffer;\n        if (newStart > timeToMinutes(actualStartTime)) {\n            actualStartTime = minutesToTime(newStart);\n            hasConflict = true;\n            console.log(`  ⚠️ Conflict! Adjusted start to: ${actualStartTime}`);\n        }\n    }\n}\n\nconst earliestStart = actualStartTime;\nconst projectedFinish = addMinutes(earliestStart, totalRequiredTime);\n\nconsole.log('📊 Final Time Calculation:', {\n    earliestStart: earliestStart,\n    projectedFinish: projectedFinish,\n    workEnd: WORK_END\n});\n\n// Check Hard Stop at 17:00\nif (timeToMinutes(projectedFinish) > timeToMinutes(WORK_END)) {\n    const availableMinutes = timeToMinutes(WORK_END) - timeToMinutes(earliestStart) - SETUP_TIME;\n    \n    console.log('❌ Day full - exceeds 17:00');\n    \n    return [{\n        json: {\n            available: false,\n            error: \"DAY_FULL\",\n            message: `Sajnos ez a munka már nem fér bele a napi programba. A legkorábbi kezdés ${earliestStart} lenne, de a munka ${projectedFinish}-ig tartana (munkaidő vége: ${WORK_END}).`,\n            details: {\n                earliestPossibleStart: earliestStart,\n                requiredTime: totalRequiredTime,\n                projectedFinish: projectedFinish,\n                availableTime: Math.max(0, availableMinutes),\n                workEnd: WORK_END,\n                travelBufferUsed: travelBuffer\n            },\n            suggestion: {\n                message: \"Kérjük válasszon másik napot!\",\n                action: \"SHOW_NEXT_AVAILABLE\"\n            },\n            __axr_input: __axrInput\n        }\n    }];\n}\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// SUCCESS - SLOT AVAILABLE\n// ═══════════════════════════════════════════════════════════════════════════════\nconst clientEndTime = addMinutes(earliestStart, serviceDuration);\n\nconsole.log('✅ Slot available!', {\n    startTime: earliestStart,\n    endTime: clientEndTime,\n    cluster: reqCluster\n});\n\nreturn [{\n    json: {\n        available: true,\n        status: hasConflict ? \"SLOT_ADJUSTED\" : \"SLOT_AVAILABLE\",\n        slot: {\n            date: newBooking.date,\n            startTime: earliestStart,\n            endTime: clientEndTime\n        },\n        cluster: {\n            id: reqCluster,\n            name: getClusterName(reqCluster),\n            country: GEO_CLUSTERS[reqCluster]?.country || \"?\"\n        },\n        calendar: {\n            isAnchor: false,\n            dayStatus: \"PARTIALLY_BOOKED\",\n            dayZone: dayCluster,\n            existingBookings: existingEvents.length,\n            internalEndTime: projectedFinish,\n            travelBufferApplied: travelBuffer\n        },\n        message: hasConflict \n            ? `${newBooking.date} napon ${earliestStart} órakor tudunk érkezni (más foglalások + ${travelBuffer} perc utazási idő miatt módosítva).`\n            : `Szuper! ${newBooking.date} napon ${earliestStart} órakor tudunk menni.`,\n        booking: newBooking,\n            __axr_input: __axrInput\n        }\n    }];\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// 🐴💚 CENTAUR COVENANT v5.0 HU - Built by Claude (CTO) & Chris Conen (CEO)\n// Distance-aware booking logic with Balaton region support\n// ═══════════════════════════════════════════════════════════════════════════════"
+      },
+      "id": "1fef3928-9170-4a2f-b0e4-20356d00336a",
+      "name": "The Brain (Logic)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        256,
+        -384
+      ]
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "chris.conen@gmail.com",
+          "mode": "list",
+          "cachedResultName": "chris.conen@gmail.com"
+        },
+        "start": "={{ $('Normalize Payload - HU').first().json.body.date }}T{{ $('Normalize Payload - HU').first().json.body.slotStartTime }}:00",
+        "end": "={{ $('Normalize Payload - HU').first().json.body.date }}T{{ $('Normalize Payload - HU').first().json.body.slotEndTime }}:00",
+        "additionalFields": {
+          "description": "=👤 Ügyfél: {{ $('Normalize Payload - HU').first().json.body.name }}\n📧 Email: {{ $('Normalize Payload - HU').first().json.body.email }}\n📞 Tel: {{ $('Normalize Payload - HU').first().json.body.phone }}\n💰 Ár: {{ $('Normalize Payload - HU').first().json.body.totalPrice }} Ft\n🗺️ Zóna: {{ $('Normalize Payload - HU').first().json.body.travelZone }}\n⏱️ Időtartam: {{ $('Normalize Payload - HU').first().json.body.duration.hours }}h {{ $('Normalize Payload - HU').first().json.body.duration.minutes }}m ({{ $('Normalize Payload - HU').first().json.body.duration.totalMinutes }} perc)\n🛋️ MEGRENDELT TÉTELEK:\n{{ $('Normalize Payload - HU').first().json.body.itemsArray && $('Normalize Payload - HU').first().json.body.itemsArray.length > 0 \n  ? $('Normalize Payload - HU').first().json.body.itemsArray.map(item => {\n      const itemName = item.id.replace('karpit_', 'Kárpit: ').replace('matrac_', 'Matrac: ').replace(/_/g, ' ');\n      const upsells = item.upsells && item.upsells.length > 0 ? '<br><span style=\"color:#666; font-size:0.9em; margin-left:20px;\">↳ Extra: ' + item.upsells.join(', ') + '</span>' : '';\n      return '<p style=\"margin:8px 0;\">• <strong>' + item.count + 'x ' + itemName + '</strong>' + upsells + '</p>';\n    }).join('')\n  : '<p style=\"color:#999;\">Nincs tétel adat</p>'\n}}\n{{ $('Normalize Payload - HU').first().json.body.conditions && $('Normalize Payload - HU').first().json.body.conditions.length > 0 ? '⚠️ Megjegyzés: ' + $('Normalize Payload - HU').first().json.body.conditions.join(', ') : '' }}\n---\nSource: {{ $('Normalize Payload - HU').first().json.body.customerType || 'N/A' }}",
+          "location": "={{ $('Normalize Payload - HU').first().json.body.location }}",
+          "summary": "=🧹 ECO CLEAN: {{ $('Normalize Payload - HU').first().json.body.city }} | {{ $('Normalize Payload - HU').first().json.body.totalPrice }} Ft"
+        }
+      },
+      "id": "37576578-b3c9-4be2-b31f-0b33a5cec08a",
+      "name": "Create Booking",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.2,
+      "position": [
+        1264,
+        -528
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "lL8o7VIX3AnLKK8m",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": {{ $('The Brain (Logic)').first().json.available }},\n  \"available\": {{ $('The Brain (Logic)').first().json.available }},\n  \"status\": \"{{ $('The Brain (Logic)').first().json.status }}\",\n  \"message\": \"{{ $('The Brain (Logic)').first().json.message }}\"\n}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "id": "ea0575d3-e88e-45f7-8fde-61f602a936c8",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2576,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "id": "5e35afc7-c017-4297-87aa-9423aca2d7ea",
+      "name": "Respond Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2368,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "info@ecocleantisztito.hu",
+        "toEmail": "={{ $('Normalize Payload - HU').first().json.body.email }}",
+        "subject": "=✅ ECO Clean megrendelés - {{ $('Normalize Payload - HU').first().json.body.date }}",
+        "html": "=<div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #1d5a02;\">\n  \n  <div style=\"background: linear-gradient(135deg, #00cc6a 0%, #00a855 100%); padding: 30px; text-align: center;\">\n    <h1 style=\"color: #ffffff; margin: 0; font-size: 24px;\">✅ Foglalás megerősítve!</h1>\n  </div>\n  \n  <div style=\"padding: 30px;\">\n    <p style=\"font-size: 16px;\">Kedves <strong>{{ $('Normalize Payload - HU').first().json.body.name }}</strong>!</p>\n    \n    <p>Köszönjük, hogy az ECO Clean szolgáltatásait választotta! Az Ön foglalásának részletei:</p>\n    \n    <div style=\"background: #f8f9fa; padding: 20px; border-radius: 10px; margin: 20px 0;\">\n      <h3 style=\"margin-top: 0; color: #00cc6a;\">📅 Időpont részletei</h3>\n      <p><strong>Dátum:</strong> {{ $('Normalize Payload - HU').first().json.body.date }}</p>\n      <p><strong>Időpont:</strong> {{ $('Normalize Payload - HU').first().json.body.slotStartTime }} - {{ $('Normalize Payload - HU').first().json.body.slotEndTime }}\n      {{ $('Normalize Payload - HU').first().json.body.isFirstSlot ? ' ✅ (pontos érkezés)' : ' ⚠️ (±30 perc)' }}</p>\n      <p><strong>Helyszín:</strong> {{ $('Normalize Payload - HU').first().json.body.location }}</p>\n      <p><strong>Becsült időtartam:</strong> {{ $('Normalize Payload - HU').first().json.body.duration.hours }}h \n{{ $('Normalize Payload - HU').first().json.body.duration.minutes }}m \n({{ $('Normalize Payload - HU').first().json.body.duration.totalMinutes }} perc)</p>\n    </div>\n\n    <div style=\"background: #e8f5e9; padding: 20px; border-radius: 10px; margin: 20px 0;\">\n      <h3 style=\"margin-top: 0; color: #00cc6a;\">🛋️ Megrendelt szolgáltatások</h3>\n      \n      {{ $('Normalize Payload - HU').first().json.body.itemsArray && $('Normalize Payload - HU').first().json.body.itemsArray.length > 0 \n        ? $('Normalize Payload - HU').first().json.body.itemsArray.map(item => {\n            const itemName = item.id.replace('karpit_', 'Kárpit - ').replace('matrac_', 'Matrac - ').replace(/_/g, ' ');\n            const upsells = item.upsells && item.upsells.length > 0 ? '<br><span style=\"color:#666; font-size:0.9em; margin-left:20px;\">↳ Extra: ' + item.upsells.join(', ') + '</span>' : '';\n            return '<div style=\"margin: 10px 0; padding: 12px; background: #fff; border-radius: 5px; border-left: 3px solid #00cc6a;\"><strong>' + item.count + 'x ' + itemName + '</strong>' + upsells + '</div>';\n          }).join('')\n        : '<p style=\"color:#999;\">Tételek betöltése...</p>'\n      }}\n      \n      {{ $('Normalize Payload - HU').first().json.body.upsellsArray && $('Normalize Payload - HU').first().json.body.upsellsArray.length > 0 \n        ? '<div style=\"margin-top:15px; padding-top:15px; border-top:1px solid #ddd;\"><strong>✨ Extra szolgáltatások:</strong><br>' + \n          $('Normalize Payload - HU').first().json.body.upsellsArray.map(upsell => \n            '<span style=\"display:inline-block; margin:5px; padding:5px 10px; background:#fff; border-radius:15px; font-size:0.9em;\">• ' + upsell.upsellType + '</span>'\n          ).join('') + '</div>' \n        : '' \n      }}\n      \n      <hr style=\"border: none; border-top: 2px solid #00cc6a; margin: 20px 0;\">\n      \n      {{ $('Normalize Payload - HU').first().json.body.discount > 0 \n        ? '<div style=\"text-align:right; margin-bottom:10px;\"><span style=\"text-decoration:line-through; color:#999;\">Eredeti ár: ' + ($('Normalize Payload - HU').first().json.body.totalPrice + $('Normalize Payload - HU').first().json.body.discount).toLocaleString('hu-HU') + ' Ft</span><br><span style=\"color:#00cc6a; font-weight:bold;\">🎉 Megtakarítás: -' + $('Normalize Payload - HU').first().json.body.discount.toLocaleString('hu-HU') + ' Ft</span></div>' \n        : '' \n      }}\n      \n      <p style=\"font-size: 22px; margin: 0; text-align: right;\"><strong>Végösszeg: {{ $('Normalize Payload - HU').first().json.body.totalPrice.toLocaleString('hu-HU') }} Ft</strong></p>\n    </div>\n\n    {{ $('Normalize Payload - HU').first().json.body.isFirstSlot \n      ? '<div style=\"background: #d4edda; padding: 15px; border-radius: 10px; border-left: 4px solid #00cc6a; margin: 20px 0;\"><strong>✅ Napi első időpont</strong><br>Pontosan a megbeszélt időpontban érkezünk!</div>' \n      : '<div style=\"background: #fff3cd; padding: 15px; border-radius: 10px; border-left: 4px solid #ffc107; margin: 20px 0;\"><strong>⚠️ Fontos tudnivaló az érkezési időről</strong><br><br>Ez <strong>nem az első időpont</strong> a napi munkánkban. A tényleges érkezési idő <strong>±30 percet</strong> változhat a következők miatt:<br>• Forgalmi helyzet<br>• Az előző munka időtartama<br><br>📞 Telefonon értesítjük, amint úton vagyunk Önhöz!</div>' \n    }}\n\n    {{ $('Normalize Payload - HU').first().json.body.conditions && $('Normalize Payload - HU').first().json.body.conditions.length > 0 \n      ? '<div style=\"background: #e3f2fd; padding: 15px; border-radius: 10px; margin: 20px 0;\"><strong>ℹ️ Különleges körülmények:</strong> ' + $('Normalize Payload - HU').first().json.body.conditions.join(', ') + '</div>' \n      : '' \n    }}\n    \n    <div style=\"background: #f8f9fa; padding: 20px; border-radius: 10px; margin: 20px 0; text-align: center;\">\n      <p style=\"margin: 0 0 10px 0;\"><strong>Kérdése van? Keressen minket bizalommal:</strong></p>\n      <p style=\"margin: 5px 0; font-size: 18px;\">📞 <a href=\"tel:+36702408141\" style=\"color: #00cc6a; text-decoration: none;\">+36 70 240 8141</a></p>\n      <p style=\"margin: 5px 0;\">📧 <a href=\"mailto:info@ecocleantisztito.hu\" style=\"color: #00cc6a; text-decoration: none;\">info@ecocleantisztito.hu</a></p>\n    </div>\n\n    <div style=\"background: #e8f5e9; padding: 15px; border-radius: 10px; margin: 20px 0;\">\n      <h4 style=\"margin-top: 0; color: #00cc6a;\">💡 Felkészülés a tisztításra:</h4>\n      <ul style=\"margin: 10px 0; padding-left: 20px; line-height: 1.8;\">\n        <li>Kérjük, gondoskodjon parkolási lehetőségről a lakás/ház közelében</li>\n        <li>Távolítson el esetleges értékeket a tisztítandó bútorokról, a kanapét mozgassa el biztonságos távolságra a frissen festett faltól, kollégáink bútorok mozgatásából származó károkért felelősséget nem tudunk vállalni!</li>\n        <li>Biztosítson áramforrást a gépek számára</li>\n        <li>Háziállat esetén kérjük elkülöníteni a munkaterülettől</li>\n      </ul>\n    </div>\n    \n\n    {{ ($('Normalize Payload - HU').first().json.body.isKarpitBooking && $('Normalize Payload - HU').first().json.body.andanteAccepted) ? '<div style=\"background: #000; padding: 15px; border-radius: 10px; margin: 20px 0; border-left: 4px solid #ff0000;\"><h4 style=\"margin-top: 0; color: #fc5f00;\">⚠️⚠️⚠️ ANDANTE szövet tisztítása ⚠️⚠️⚠️</h4><p style=\"font-size: 0.95em;\">Ön elfogadta az <strong style=\"color: #fc5f00;\">ANDANTE</strong> rendszer tisztításával kapcsolatos feltételeket. Amennyiben ANDANTE típusú szövetre foglalt időpontot, az időpontfoglalás értékének 50%-át köteles megtéríteni a helyszínen!</p></div>' : '' }}\n    \n    <p style=\"margin-top: 30px;\">Üdvözlettel,<br><strong>Az ECO Clean csapata</strong></p>\n    \n    <p style=\"font-size: 0.85em; color: #666; margin-top: 20px;\">\n      <em>Ez egy automatikus visszaigazoló email. Kérjük, ne válaszoljon rá közvetlenül. Kérdés esetén használja a fenti elérhetőségeket.</em>\n    </p>\n  </div>\n  \n  <div style=\"background: #1a1a2e; color: #999; padding: 20px; text-align: center; font-size: 12px;\">\n    <p style=\"margin: 0; color: #00ff88;\">ECO Clean Magyarország | Professzionális kárpit- és matractisztítás</p>\n    <p style=\"margin: 10px 0 0 0;\"><a href=\"https://ecocleantisztito.hu\" style=\"color: #00cc6a; text-decoration: none;\">www.ecocleantisztito.hu</a></p>\n    <p style=\"margin: 10px 0 0 0; font-size: 11px;\">\n      🌿 Környezetbarát tisztítószerek | ⚡ Gyors száradás | 💯 100% elégedettségi garancia\n    </p>\n  </div>\n  \n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2432,
+        -400
+      ],
+      "id": "2e61869f-917f-4f92-bb13-b08cdebac950",
+      "name": "Send email",
+      "webhookId": "6fa626ee-160d-480d-935c-041df0b66a11",
+      "credentials": {
+        "smtp": {
+          "id": "B4uZxCrX6Njc1Qzz",
+          "name": "SMTP account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "chris.conen@gmail.com",
+          "mode": "list",
+          "cachedResultName": "chris.conen@gmail.com"
+        },
+        "timeMin": "={{ $('Normalize Payload - HU').first().json.body.date }}T00:00:00Z",
+        "timeMax": "={{ $('Normalize Payload - HU').first().json.body.date }}T23:59:59Z",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        416,
+        -384
+      ],
+      "id": "58fdde8d-7aae-4cdf-a282-b5c4239ab0a4",
+      "name": "Fresh Calendar Check",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "lL8o7VIX3AnLKK8m",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════════════════════\n// ⏰ SLOT STILL FREE CHECK v2.0 - HU\n// ═══════════════════════════════════════════════════════════════════════════════\n// Ellenőrzi hogy a kiválasztott időpont még szabad-e a friss Calendar adatok alapján\n// ═══════════════════════════════════════════════════════════════════════════════\n\n// A frissen lekért események\nconst freshEvents = $('Fresh Calendar Check').all();\n\n// FIX: Nincs \"body\" mező a normalized payload-ban!\nconst payload = $('Normalize Payload - HU').first().json.body;  // ← .body HOZZÁADVA!\n\n// ── AXR 0.2: a node tenyleges inputja - amit a Slot Still Free VALOBAN olvas ──\nconst __axrInput = {\n  normalized_body: payload,\n  fresh_calendar_events: freshEvents.map(i => i.json)\n};\n\n// FIX: Helyes property nevek\nconst requestedStart = payload.slotStart || payload.slotStartTime || \"09:00\";\nconst requestedEnd = payload.slotEnd || payload.slotEndTime || \"11:00\";\n\nconsole.log('⏰ Slot Still Free Check:', {\n    requestedSlot: `${requestedStart} - ${requestedEnd}`,\n    existingEventsCount: freshEvents.length,\n    date: payload.bookingDate\n});\n\n// Van-e ütközés?\nlet conflict = false;\nlet conflictInfo = null;\n\nfor (const event of freshEvents) {\n    // Skip ha nincs valid event data\n    if (!event.json || !event.json.start?.dateTime || !event.json.end?.dateTime) {\n        continue;\n    }\n    \n    const eventStart = event.json.start.dateTime.split('T')[1]?.substring(0,5);\n    const eventEnd = event.json.end.dateTime.split('T')[1]?.substring(0,5);\n    \n    if (!eventStart || !eventEnd) continue;\n    \n    console.log('  → Checking event:', {\n        summary: event.json.summary,\n        eventSlot: `${eventStart} - ${eventEnd}`,\n        requestedSlot: `${requestedStart} - ${requestedEnd}`\n    });\n    \n    // Átfedés ellenőrzés\n    // Ha a kért kezdés < esemény vége ÉS kért vége > esemény kezdete → ÜTKÖZÉS\n    if (requestedStart < eventEnd && requestedEnd > eventStart) {\n        conflict = true;\n        conflictInfo = {\n            existingStart: eventStart,\n            existingEnd: eventEnd,\n            summary: event.json.summary || 'Foglalás',\n            location: event.json.location || 'Nincs megadva'\n        };\n        \n        console.log('  ❌ ÜTKÖZÉS!', conflictInfo);\n        break;\n    }\n}\n\nif (!conflict) {\n    console.log('  ✅ Slot szabad!');\n}\n\nreturn [{\n    json: {\n        slotFree: !conflict,\n        conflict: conflict,\n        conflictInfo: conflictInfo,\n        requestedSlot: {\n            start: requestedStart,\n            end: requestedEnd,\n            date: payload.bookingDate\n        },\n        // Pass through the full payload for next nodes\n        ...payload,\n        __axr_input: __axrInput\n    }\n}];\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// 🐴💚 CENTAUR COVENANT\n// ═══════════════════════════════════════════════════════════════════════════════"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        -384
+      ],
+      "id": "5806df04-65bb-4e4b-aaad-b61731e367d2",
+      "name": "Slot Still Free?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ae831162-c229-465d-a99d-8c853937a910",
+              "leftValue": "={{ $('Slot Still Free?').first().json.slotFree }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        896,
+        -384
+      ],
+      "id": "1a415073-a10a-4e9c-b183-ddb047b493e7",
+      "name": "Slot Free?"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2368,
+        -176
+      ],
+      "id": "e668b90b-6d27-4412-b457-1b02569a4643",
+      "name": "Respond Conflict"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "booking-request-hu",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        -384
+      ],
+      "id": "1729e2d2-a688-42ea-98ad-d66f8da43d29",
+      "name": "Webhook",
+      "webhookId": "f136058a-0b1d-4576-bdd5-0beac5356c8e"
+    },
+    {
+      "parameters": {
+        "sendTo": "chris.conen@gmail.com",
+        "subject": "=🚨 ÚJ FOGLALÁS: {{ $json.body.location }} - {{ $json.body.date }}",
+        "message": "=<h2>🚨 Új ECO Clean Magyarország foglalás!</h2>\n\n<table style=\"width:100%; border-collapse:collapse;\">\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>👤 Ügyfél:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ $('Normalize Payload - HU').first().json.body.name }}</td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>👥 Típus:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ $('Normalize Payload - HU').first().json.body.customerType }}</td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>📧 Email:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><a href=\"mailto:{{ $('Normalize Payload - HU').first().json.body.email }}\">{{ $('Normalize Payload - HU').first().json.body.email }}</a></td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>📞 Telefon:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><a href=\"tel:{{ $('Normalize Payload - HU').first().json.body.phone }}\">{{ $('Normalize Payload - HU').first().json.body.phone }}</a></td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>💬 Üzenet:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ $('Normalize Payload - HU').first().json.body.message || 'Nincs üzenet' }}</td>\n  </tr>\n</table>\n\n<h3 style=\"margin-top:20px; border-bottom:2px solid #00cc6a; padding-bottom:5px;\">📅 Időpont</h3>\n<table style=\"width:100%; border-collapse:collapse;\">\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>📆 Dátum:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ $('Normalize Payload - HU').first().json.body.date }}</td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>⏰ Időpont:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">\n      <strong>{{ $('Normalize Payload - HU').first().json.body.slotStartTime }} - {{ $('Normalize Payload - HU').first().json.body.slotEndTime }}</strong>\n      {{ $('Normalize Payload - HU').first().json.body.isFirstSlot ? ' ✅ (pontos)' : ' ⚠️ (±30 perc)' }}\n    </td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>📍 Helyszín:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ $('Normalize Payload - HU').first().json.body.location }}</td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>🏙️ Város:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ $('Normalize Payload - HU').first().json.body.city }}</td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>🗺️ Zóna:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ $('Normalize Payload - HU').first().json.body.zone || 'HU' }}</td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>🚗 Kiszállási díj:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ $('Normalize Payload - HU').first().json.body.travelZone }}</td>\n  </tr>\n</table>\n\n<h3 style=\"margin-top:20px; border-bottom:2px solid #00cc6a; padding-bottom:5px;\">🛋️ Megrendelt tételek</h3>\n<div style=\"background:#f8f9fa; padding:15px; border-radius:8px;\">\n{{ $('Normalize Payload - HU').first().json.body.itemsArray && $('Normalize Payload - HU').first().json.body.itemsArray.length > 0 \n  ? $('Normalize Payload - HU').first().json.body.itemsArray.map(item => {\n      const itemName = item.id.replace('karpit_', 'Kárpit: ').replace('matrac_', 'Matrac: ').replace(/_/g, ' ');\n      const upsells = item.upsells && item.upsells.length > 0 ? '<br><span style=\"color:#666; font-size:0.9em; margin-left:20px;\">↳ Extra: ' + item.upsells.join(', ') + '</span>' : '';\n      return '<p style=\"margin:8px 0;\">• <strong>' + item.count + 'x ' + itemName + '</strong>' + upsells + '</p>';\n    }).join('')\n  : '<p style=\"color:#999;\">Nincs tétel adat</p>'\n}}\n</div>\n\n{{ $('Normalize Payload - HU').first().json.body.upsellsArray && $('Normalize Payload - HU').first().json.body.upsellsArray.length > 0 \n  ? '<h3 style=\"margin-top:20px; border-bottom:2px solid #00cc6a; padding-bottom:5px;\">✨ Extra szolgáltatások</h3><div style=\"background:#e8f5e9; padding:15px; border-radius:8px;\">' + \n    $('Normalize Payload - HU').first().json.body.upsellsArray.map(u => '<p style=\"margin:5px 0;\">• ' + u.upsellType + '</p>').join('') + '</div>'\n  : '' \n}}\n\n<h3 style=\"margin-top:20px; border-bottom:2px solid #00cc6a; padding-bottom:5px;\">📊 Összesítés</h3>\n<table style=\"width:100%; border-collapse:collapse;\">\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>💰 Ár (kedvezmény előtt):</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">{{ ((Number($('Normalize Payload - HU').first().json.body.totalPrice) || 0) + (Number($('Normalize Payload - HU').first().json.body.discount) || 0)).toLocaleString('hu-HU') }} Ft</td>\n  </tr>\n  {{ $('Normalize Payload - HU').first().json.body.discount > 0 \n    ? '<tr><td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>🎉 Kedvezmény:</strong></td><td style=\"padding:8px; border-bottom:1px solid #ddd; color:#00cc6a;\">-' + (Number($('Normalize Payload - HU').first().json.body.discount) || 0).toLocaleString('hu-HU') + ' Ft</td></tr>' \n    : '' \n  }}\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>💰 VÉGÖSSZEG:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd; font-size:1.3em; color:#00cc6a;\"><strong>{{ (Number($('Normalize Payload - HU').first().json.body.totalPrice) || 0).toLocaleString('hu-HU') }} Ft</strong></td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\"><strong>⏱️ Becsült időtartam:</strong></td>\n    <td style=\"padding:8px; border-bottom:1px solid #ddd;\">\n      {{ $('Normalize Payload - HU').first().json.body.duration.hours }}h \n{{ $('Normalize Payload - HU').first().json.body.duration.minutes }}m \n({{ $('Normalize Payload - HU').first().json.body.duration.totalMinutes }} perc)\n    </td>\n  </tr>\n</table>\n\n{{ $('Normalize Payload - HU').first().json.body.conditions && $('Normalize Payload - HU').first().json.body.conditions.length > 0 \n  ? '<div style=\"background:#fff3cd; padding:15px; border-radius:8px; margin:20px 0; border-left:4px solid #ffc107;\"><strong>⚠️ Különleges körülmények:</strong><br>' + $('Normalize Payload - HU').first().json.body.conditions.join(', ') + '</div>' \n  : '' \n}}\n\n<div style=\"background:#e3f2fd; padding:15px; border-radius:8px; margin:20px 0; border-left:4px solid #00cc6a;\">\n  <strong>📱 Gyors műveletek:</strong><br>\n  • Hívás: <a href=\"tel:{{ $('Normalize Payload - HU').first().json.body.phone }}\" style=\"color:#00cc6a; font-weight:bold;\">{{ $('Normalize Payload - HU').first().json.body.phone }}</a><br>\n  • Email: <a href=\"mailto:{{ $('Normalize Payload - HU').first().json.body.email }}\" style=\"color:#00cc6a;\">{{ $('Normalize Payload - HU').first().json.body.email }}</a>\n</div>\n\n<div style=\"background:#f0f0f0; padding:10px; border-radius:5px; margin:20px 0; font-size:0.85em; color:#666;\">\n  <strong>Foglalás részletei:</strong><br>\n  • Forrás: {{ $('Normalize Payload - HU').first().json.body.source }}<br>\n  • Időbélyeg: {{ $('Normalize Payload - HU').first().json.body.timestamp }}<br>\n  • Ország: {{ $('Normalize Payload - HU').first().json.body.country }}\n  </div>\n\n  {{ ($('Normalize Payload - HU').first().json.body.isKarpitBooking && $('Normalize Payload - HU').first().json.body.andanteAccepted) ? '<div style=\"background:#fff3cd; padding:15px; border-radius:8px; margin:20px 0; border-left:4px solid #ff0000;\"><strong style=\"color:#ff0000;\">ANDANTE rendszer tisztítása</strong><br><span style=\"font-size:0.9em;\">Az ügyfél elfogadta az <strong style=\"color:#ff0000;\">ANDANTE</strong> feltételeket.</span></div>' : '' }}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2272,
+        -400
+      ],
+      "id": "63d6fe3d-1fc9-41a1-be86-b9f3af17d5fd",
+      "name": "Send Email - Admin HU",
+      "webhookId": "c55a4d46-5013-4aec-bb4a-46ce5b7a2b74",
+      "retryOnFail": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gx5k6tbOA9D6oAfn",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════════════════════\n// CLAUDE - PAYLOAD NORMALIZER v3.3 HU\n// ═══════════════════════════════════════════════════════════════════════════════\n// Converts HU frontend payload to workflow-compatible format\n// Includes: isFirstSlot, slotStartTime, slotEndTime calculation\n// Based on AT version with HU-specific adaptations\n// ═══════════════════════════════════════════════════════════════════════════════\n// ── AXR 0.2: a node tenyleges inputjanak rogzitese ──\nconst __axrInput = $input.all().map(i => i.json);\nconst webhookData = $input.first().json;\nconst body = webhookData.body || webhookData;\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// VALIDACIO v3.3 (2026-05-26) - nema datum-fallback megszuntetese\n// Ha a frontend nem kuldott ervenyes datumot/idopontot, NE talaljunk ki egyet,\n// hanem allitsuk meg a folyamatot. Ez okozta a 2026-05-26-i hibas AT foglalasokat.\n// ═══════════════════════════════════════════════════════════════════════════════\nif (body.name && body.email) {\n  const incomingDate = body.date;\n  const incomingSlot = body.slotStartTime;\n\n  if (!incomingDate || !incomingSlot) {\n    const missing = [];\n    if (!incomingDate) missing.push('date');\n    if (!incomingSlot) missing.push('slotStartTime');\n\n    throw new Error(\n      `HIANYZO_IDOPONT: A foglalas nem dolgozhato fel, mert a frontend nem kuldott ervenyes idopontot. ` +\n      `Hianyzo mezok: ${missing.join(', ')}. ` +\n      `Ugyfel: ${body.name || 'ismeretlen'} (${body.email || 'nincs email'}), ` +\n      `helyszin: ${body.location || 'ismeretlen'}. ` +\n      `Valoszinuleg frontend hiba - ellenorizd a magyar foglalasi urlapot (booking-config.js).`\n    );\n  }\n}\n\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// MAIN NORMALIZATION\n// ═══════════════════════════════════════════════════════════════════════════════\n\nlet normalized = {};\n\n// Handle both old flat structure and new nested structure\nif (body.name && body.email) {\n  // CURRENT STRUCTURE (from booking-config.js)\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // 🆕 SLOT TIME CALCULATION (CRITICAL!)\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  const slotStartTime = body.slotStartTime || '09:00';\n  const duration = body.totalDuration || 60;\n  \n  // Calculate end time\n  const [startH, startM] = slotStartTime.split(':').map(Number);\n  const endMinutes = startH * 60 + startM + duration;\n  const endH = Math.floor(endMinutes / 60);\n  const endM = endMinutes % 60;\n  const slotEndTime = `${endH.toString().padStart(2, '0')}:${endM.toString().padStart(2, '0')}`;\n  \n  console.log('⏰ Slot Time Calculation:', {\n    slotStartTime: slotStartTime,\n    duration: duration,\n    slotEndTime: slotEndTime\n  });\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // BUILD NORMALIZED STRUCTURE\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  normalized = {\n    // METADATA\n    country: 'HU',\n    zone: 'HU',\n    source: 'ecocleantisztito.hu',\n    currency: 'HUF',\n    language: 'hu',\n    locale: 'hu-HU',\n    \n    // CUSTOMER INFO\n    name: body.name,\n    email: body.email,\n    phone: body.phone || 'Nincs megadva',\n    customerType: body.customerType || 'Magánszemély',\n    message: body.message || null,\n    \n    // LOCATION\n    location: body.location,\n    city: body.city,\n    travelZone: body.travelZone,\n    \n    // BOOKING DETAILS\n    date: body.date,\n    conditions: body.conditions || [],\n    \n    // 🆕 SLOT TIMES - For Calendar Event & Availability Check\n    slotStartTime: slotStartTime,\n    slotEndTime: slotEndTime,\n    slotStart: slotStartTime,      // Alias for consistency\n    slotEnd: slotEndTime,           // Alias for consistency\n    \n    // 🆕 Slot & Flexibility info\n    isFirstSlot: body.isFirstSlot !== false,\n    \n    // ITEMS & SERVICES\n    items: body.items || {},\n    upsells: body.upsells || {},\n    \n    // TOTALS\n    totalPrice: body.totalPrice || 0,\n    totalDuration: duration,\n    discount: body.discount || 0,\n    \n    // ANDANTE / KARPIT FLAGS (for conditional email blocks)\n    isKarpitBooking: (() => {\n      const items = body.items || {};\n      return Object.keys(items).some(k => typeof k === 'string' && k.startsWith('karpit_') && items[k] && items[k].count > 0);\n    })(),\n    andanteAccepted: body.andanteAccepted === true || body.andanteAccepted === 'true',\n    \n    // TIMESTAMP\n    timestamp: body.timestamp || new Date().toISOString()\n  };\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // ITEMS FORMATTING (array-hez konvertálás)\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  if (normalized.items && typeof normalized.items === 'object') {\n    const itemsArray = [];\n    \n    Object.entries(normalized.items).forEach(([itemId, itemData]) => {\n      if (itemData.count && itemData.count > 0) {\n        itemsArray.push({\n          id: itemId,\n          category: itemData.category || 'unknown',\n          count: itemData.count,\n          upsells: itemData.upsells || []\n        });\n      }\n    });\n    \n    normalized.itemsArray = itemsArray;\n    normalized.itemCount = itemsArray.length;\n  }\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // UPSELLS FORMATTING\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  if (normalized.upsells && typeof normalized.upsells === 'object') {\n    const upsellsArray = [];\n    \n    Object.entries(normalized.upsells).forEach(([upsellId, upsellData]) => {\n      upsellsArray.push({\n        id: upsellId,\n        category: upsellData.category || 'unknown',\n        upsellType: upsellData.upsellId || upsellId\n      });\n    });\n    \n    normalized.upsellsArray = upsellsArray;\n    normalized.upsellCount = upsellsArray.length;\n  }\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // CUSTOMER DATA STRUCTURE\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  normalized.customer = {\n    name: normalized.name,\n    email: normalized.email,\n    phone: normalized.phone,\n    type: normalized.customerType\n  };\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // LOCATION DATA STRUCTURE\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  normalized.locationData = {\n    fullAddress: normalized.location,\n    city: normalized.city,\n    travelZone: normalized.travelZone,\n    country: 'HU'\n  };\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // PRICING DATA STRUCTURE\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  normalized.pricing = {\n    total: normalized.totalPrice,\n    discount: normalized.discount,\n    subtotal: normalized.totalPrice + normalized.discount,\n    currency: 'HUF'\n  };\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // DURATION DATA STRUCTURE\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  normalized.duration = {\n    totalMinutes: normalized.totalDuration,\n    hours: Math.floor(normalized.totalDuration / 60),\n    minutes: normalized.totalDuration % 60\n  };\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // CALENDAR DATE (bookingDate alias)\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  normalized.bookingDate = normalized.date;\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // VALIDATION FLAGS\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  normalized.validation = {\n    hasItems: (normalized.itemsArray || []).length > 0,\n    hasCustomer: !!(normalized.name && normalized.email && normalized.phone),\n    hasLocation: !!normalized.location,\n    hasDate: !!normalized.date,\n    hasSlot: !!(normalized.slotStartTime && normalized.slotEndTime)\n  };\n  \n  // ═══════════════════════════════════════════════════════════════════════════\n  // METADATA\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  normalized.metadata = {\n    processedAt: new Date().toISOString(),\n    originalTimestamp: normalized.timestamp,\n    isFirstSlot: normalized.isFirstSlot,\n    webhookSource: 'booking-request-hu',\n    version: '3.3'\n  };\n  \n} else {\n  // ═══════════════════════════════════════════════════════════════════════════\n  // OLD STRUCTURE (fallback)\n  // ═══════════════════════════════════════════════════════════════════════════\n  \n  console.log('⚠️ Old payload structure detected - using fallback');\n  \n  const duration = body.duration || body.totalDuration || 60;\n  const slotStartTime = body.slotStartTime || '09:00';\n  \n  const [startH, startM] = slotStartTime.split(':').map(Number);\n  const endMinutes = startH * 60 + startM + duration;\n  const endH = Math.floor(endMinutes / 60);\n  const endM = endMinutes % 60;\n  const slotEndTime = `${endH.toString().padStart(2, '0')}:${endM.toString().padStart(2, '0')}`;\n  \n  normalized = {\n    country: 'HU',\n    zone: 'HU',\n    source: 'ecocleantisztito.hu',\n    name: body.name || 'Ismeretlen',\n    email: body.email,\n    phone: body.phone,\n    location: body.location,\n    date: body.date,\n    totalDuration: duration,\n    totalPrice: body.price || body.totalPrice || 0,\n    slotStartTime: slotStartTime,\n    slotEndTime: slotEndTime,\n    slotStart: slotStartTime,\n    slotEnd: slotEndTime,\n    isFirstSlot: true,\n    itemsArray: [],\n    conditions: [],\n    customer: {\n      name: body.name || 'Ismeretlen',\n      email: body.email,\n      phone: body.phone,\n      type: 'Magánszemély'\n    },\n    locationData: {\n      fullAddress: body.location,\n      city: body.city,\n      country: 'HU'\n    },\n    pricing: {\n      total: body.price || body.totalPrice || 0,\n      discount: 0,\n      subtotal: body.price || body.totalPrice || 0,\n      currency: 'HUF'\n    },\n    duration: {\n      totalMinutes: duration,\n      hours: Math.floor(duration / 60),\n      minutes: duration % 60\n    },\n    bookingDate: body.date,\n    metadata: {\n      processedAt: new Date().toISOString(),\n      version: '3.3',\n      fallback: true\n    }\n  };\n}\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// DATUM-FALLBACK ELTAVOLITVA v3.3 (2026-05-26)\n// A nema datum-kitalalas okozta a hibas foglalasokat. A validacio a node elejen\n// mar elkapja a hianyzo datumot - ide mar csak ervenyes datummal jutunk el.\n// ═══════════════════════════════════════════════════════════════════════════════\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// CONSOLE LOG FOR DEBUGGING\n// ═══════════════════════════════════════════════════════════════════════════════\n\nconsole.log('🇭🇺 HU Booking Normalized:', {\n  country: normalized.country,\n  customer: normalized.customer?.name,\n  city: normalized.locationData?.city,\n  date: normalized.date,\n  slot: `${normalized.slotStart} - ${normalized.slotEnd}`,\n  duration: `${normalized.duration?.hours}h ${normalized.duration?.minutes}m`,\n  price: `${normalized.pricing?.total} Ft`,\n  itemCount: normalized.itemCount || 0,\n  isValid: normalized.validation?.hasCustomer && normalized.validation?.hasDate\n});\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// RETURN - AT KOMPATIBILIS STRUKTÚRA\n// ═══════════════════════════════════════════════════════════════════════════════\n\nreturn [{ \n  json: { \n    body: normalized,           // AT kompatibilitás\n    originalPayload: body,      // AT kompatibilitás\n    __axr_input: __axrInput     // AXR 0.2: ezt a lepest mi taplalta\n  } \n}];\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// 🐴💚 CENTAUR COVENANT - Built by Claude (CTO) & Chris Conen (CEO)\n// ═══════════════════════════════════════════════════════════════════════════════"
+      },
+      "id": "782096bf-6865-4e15-994b-f4e1e582b6bc",
+      "name": "Normalize Payload - HU",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        -384
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "condition-approved",
+              "leftValue": "={{ $('Slot Still Free?').first().json.slotFree }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "f561c9e4-8bad-4a63-91cd-fe177d329c0c",
+              "leftValue": "={{ $('The Brain (Logic)').first().json.available }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "fbc9a12b-c156-41cc-be24-ef40d013d346",
+      "name": "Available? - HU",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1072,
+        -512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════════════════════\n// AXR Receipt Generator - N8N Code Node v0.2.1 (hardened)\n// ═══════════════════════════════════════════════════════════════════════════════\n// DROP-IN CSERE a meglevo \"AXR Receipt Generator\" node jsCode tartalmara.\n// A wire format valtozatlanul 0.2 - a meglevo receipts-hu.jsonl lanc\n// megszakitas nelkul folytatodik, a regi receiptek tovabbra is verifikalnak.\n//\n// VALTOZASOK a v0.2-hoz kepest (2026-06-10, audit utan):\n//\n//  [P0] GUARDED CANONICALIZER - az axr-core.js 0.2+ guardjai portolva:\n//       NaN/Infinity/undefined EXPLICIT hibat dob, nem szerializalodik nemán\n//       \"null\"-la / kimarado mezove. Igy az alairas sosem fed eltero\n//       jelentest, es a JS<->Python cross-impl paritas elesben sem torhet el.\n//\n//  [P0] HMAC-os customer_ref - a sima sha256(name|email|phone) szotar-\n//       tamadassal visszafejtheto volt (aki ismer egy email-cimet, meg tudta\n//       erositeni, hogy az illeto foglalt-e). Mostantol HMAC-SHA256 egy titkos\n//       pepperrel; a pepper elso futaskor generalodik a kulcs melle (mode 600).\n//       FIGYELEM: az uj customer_ref ertekek nem linkelhetok a regiekkel -\n//       ez szandekos (a regi ertekek gyengek voltak).\n//\n//  [P1] FAIL-OPEN - a teljes AXR logika try/catch-ben fut. Ha barmi elbukik\n//       (hianyzo kulcs, betelt lemez), a FOGLALAS valaszol tovabb, a hiba\n//       pedig hangosan megjelenik a __axr.error mezoben, amit a Route by\n//       Status utani admin-email is tovabbvisz. A receipt-lyuk igy lathato\n//       marad (lanc-hossz-mint-tanusag), de ugyfel-foglalast sosem tor el.\n//\n//  [AUDIT] logic_version FRISSITVE a tenyleges kodhoz (Normalize 3.3 HU,\n//       Brain 5.1 HU, Slot Still Free 2.0 HU) + uj logic_hash mezo: a node\n//       jsCode SHA-256 ujjlenyomata. A receipt igy nem csak egy kezzel irt\n//       cimket, hanem a kod tenyleges ujjlenyomatat tanusitja. A konstansokat\n//       az axr-workflow-lint.js tartja szinkronban (CI gate: exit 1 driftnel).\n//\n//  [OPS] AXR_DIR felulirhato env-bol (AXR_DIR) - tesztelhetoseg, dev/prod\n//       elvalasztas.\n//\n// Olvassa: Normalize Payload - HU, AXR Mark: Check Day Schedule,\n//          The Brain (Logic), AXR Mark: Fresh Calendar Check,\n//          Slot Still Free?, AXR Mark: Create Booking\n// Ir:  $AXR_DIR/receipts-hu.jsonl  (append-only)\n// Alair: $AXR_DIR/signing-key.pem  (ed25519)\n// Pepper: $AXR_DIR/customer-pepper.key (32 byte hex, elso futaskor generalodik)\n// Fuggoseg: csak beepitett modulok (crypto, fs).\n// ═══════════════════════════════════════════════════════════════════════════════\n\nconst crypto = require('crypto');\nconst fs = require('fs');\n\nconst AXR_VERSION = '0.2';\nconst AXR_INPUT_KEY = '__axr_input';\n\nconst AXR_DIR = process.env.AXR_DIR || '/home/node/.n8n/axr';\nconst LOG_PATH = AXR_DIR + '/receipts-hu.jsonl';\nconst KEY_PATH = AXR_DIR + '/signing-key.pem';\nconst PEPPER_PATH = AXR_DIR + '/customer-pepper.key';\n\n// ── Kanonikus szerializalas - GUARDED (axr-core 0.2+ szerint) ──────────────────\n// NaN/Infinity/undefined: a JSON.stringify ezeket nemán \"null\"-la alakitja vagy\n// kihagyja - kulonbozo szemantika azonos bajtokra kepezve. EXPLICIT eldobjuk.\nfunction canonicalize(value) {\n  if (value === undefined) {\n    throw new Error('AXR canonicalize: undefined ertek nem szerializalhato');\n  }\n  if (typeof value === 'number' && !Number.isFinite(value)) {\n    throw new Error('AXR canonicalize: NaN/Infinity nem szerializalhato');\n  }\n  if (value === null || typeof value !== 'object') return JSON.stringify(value);\n  if (Array.isArray(value)) return '[' + value.map(canonicalize).join(',') + ']';\n  const keys = Object.keys(value).sort();\n  return '{' + keys.map(k => {\n    if (value[k] === undefined) {\n      throw new Error(`AXR canonicalize: undefined ertek a(z) \"${k}\" kulcsnal`);\n    }\n    return JSON.stringify(k) + ':' + canonicalize(value[k]);\n  }).join(',') + '}';\n}\nfunction sha256(value) {\n  const input = typeof value === 'string' ? value : canonicalize(value);\n  return 'sha256:' + crypto.createHash('sha256').update(input, 'utf8').digest('hex');\n}\nfunction signReceipt(receiptWithoutSignature, privateKeyPem) {\n  const privateKey = crypto.createPrivateKey(privateKeyPem);\n  const message = Buffer.from(canonicalize(receiptWithoutSignature), 'utf8');\n  return crypto.sign(null, message, privateKey).toString('base64');\n}\n\n// ── Pepperes (HMAC) ugyfel-referencia ──────────────────────────────────────────\n// A pepper nelkuli sha256 szotar-tamadhato volt. A pepper a kulcs mellett el,\n// elso futaskor generalodik. Ha a pepper-fajl nem irhato, a customer_ref null\n// lesz es warning keletkezik - hamis/gyenge erteket nem irunk.\nfunction loadOrCreatePepper() {\n  if (fs.existsSync(PEPPER_PATH)) {\n    return fs.readFileSync(PEPPER_PATH, 'utf8').trim();\n  }\n  const pepper = crypto.randomBytes(32).toString('hex');\n  fs.writeFileSync(PEPPER_PATH, pepper + '\\n', { encoding: 'utf8', mode: 0o600 });\n  return pepper;\n}\nfunction customerRef(pepper, name, email, phone) {\n  if (!pepper) return null;\n  const msg = [name || '', email || '', phone || ''].join('|').toLowerCase();\n  return 'hmac-sha256:' + crypto.createHmac('sha256', pepper).update(msg, 'utf8').digest('hex');\n}\n\n// ── __axr_input marker levalasztasa (valtozatlan a v0.2-hoz kepest) ────────────\nfunction splitAxrInput(nodeOutput) {\n  if (Array.isArray(nodeOutput)) {\n    if (nodeOutput.length === 0) return { input: undefined, output: nodeOutput };\n    const first = nodeOutput[0];\n    const restItems = nodeOutput.slice(1);\n    if (first && typeof first === 'object' && !Array.isArray(first) && AXR_INPUT_KEY in first) {\n      const { [AXR_INPUT_KEY]: input, ...cleanFirst } = first;\n      return { input, output: [cleanFirst, ...restItems] };\n    }\n    return { input: undefined, output: nodeOutput };\n  }\n  if (nodeOutput && typeof nodeOutput === 'object' && AXR_INPUT_KEY in nodeOutput) {\n    const { [AXR_INPUT_KEY]: input, ...clean } = nodeOutput;\n    return { input, output: clean };\n  }\n  return { input: undefined, output: nodeOutput };\n}\n\nfunction safeGet(nodeName) {\n  try {\n    const items = $(nodeName).all();\n    if (!items || items.length === 0) return null;\n    return items.map(i => i.json);\n  } catch (e) {\n    return null;\n  }\n}\n\n// ── Brain dontes kiemelese (valtozatlan) ───────────────────────────────────────\nfunction extractBrainDecision(brainOutput) {\n  const o = brainOutput || {};\n  return {\n    status: o.status || o.error || 'UNKNOWN',\n    available: o.available === true,\n    cluster_id: o.cluster?.id || o.details?.requestedZone || null,\n    cluster_country: o.cluster?.country || null,\n    assigned_slot: o.slot ? `${o.slot.startTime}-${o.slot.endTime}` : null,\n    travel_buffer_applied: o.calendar?.travelBufferApplied || null,\n    reason: o.status === 'ANCHOR_BOOKING' ? 'empty_day_anchor'\n          : o.status === 'SLOT_ADJUSTED' ? 'conflict_shifted'\n          : o.status === 'SLOT_AVAILABLE' ? 'slot_free'\n          : o.error === 'ZONE_INCOMPATIBLE' ? (o.details?.reason || 'distance_too_far')\n          : o.error === 'DAY_FULL' ? 'exceeds_work_end'\n          : 'unknown'\n  };\n}\n\nfunction buildInputSummary(nodeName, nodeOutput, body) {\n  if (nodeName === 'Normalize Payload - HU') {\n    return { date: body.date, duration_minutes: body.totalDuration,\n             requested_slot_start: body.slotStartTime,\n             city: body.locationData?.city || null,\n             has_items: body.validation?.hasItems ?? null };\n  }\n  if (nodeName === 'Check Day Schedule' || nodeName === 'Fresh Calendar Check') {\n    const events = Array.isArray(nodeOutput) ? nodeOutput.filter(e => e && e.id) : [];\n    return { existing_events_count: events.length, date: body.date };\n  }\n  if (nodeName === 'The Brain (Logic)') {\n    return { date: body.date, duration_minutes: body.totalDuration,\n             requested_slot_start: body.slotStartTime };\n  }\n  if (nodeName === 'Slot Still Free?' || nodeName === 'Create Booking') {\n    return { date: body.date };\n  }\n  return {};\n}\n\nfunction buildDecisionSummary(brain, finalStatus) {\n  if (finalStatus === 'SLOT_TAKEN_ON_RECHECK') {\n    return `Brain javasolt slotot (${brain.assigned_slot}), de a friss ellenorzes konfliktust talalt - foglalas elmaradt`;\n  }\n  if (brain.available) return `Zone ${brain.cluster_id}, slot ${brain.assigned_slot}, status ${brain.status}`;\n  return `Elutasitva: ${brain.status}, ok: ${brain.reason}, zona: ${brain.cluster_id || 'ismeretlen'}`;\n}\n\nfunction readPrevWorkflowHash() {\n  try {\n    if (!fs.existsSync(LOG_PATH)) return null;\n    const lines = fs.readFileSync(LOG_PATH, 'utf8').trim().split('\\n').filter(Boolean);\n    for (let i = lines.length - 1; i >= 0; i--) {\n      const rec = JSON.parse(lines[i]);\n      if (rec.receipt_type === 'workflow') return sha256(rec);\n    }\n    return null;\n  } catch (e) {\n    return null;\n  }\n}\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// STEP_NODES - a tanusitando node-ok fix sorrendben.\n// A logic_version es logic_hash ertekeket az axr-workflow-lint.js tartja\n// szinkronban a tenyleges node-koddal:\n//   node axr-workflow-lint.js workflow.json        -> drift eseten exit 1\n//   node axr-workflow-lint.js workflow.json --manifest m.json -> friss hash-ek\n// NE frissitsd kezzel hash-szamolas nelkul - a lint a forras.\n// ═══════════════════════════════════════════════════════════════════════════════\nconst STEP_NODES = [\n  { node: 'Normalize Payload - HU', readFrom: 'Normalize Payload - HU',\n    type: 'n8n-nodes-base.code',          logic_version: '3.3 HU',\n    logic_hash: 'sha256:ca343b08b7aee19b0481a1fc8609fac506051a9e40953a55e9868a026ab71563' },\n  { node: 'Check Day Schedule',     readFrom: 'AXR Mark: Check Day Schedule',\n    type: 'n8n-nodes-base.googleCalendar', logic_version: null, logic_hash: null },\n  { node: 'The Brain (Logic)',      readFrom: 'The Brain (Logic)',\n    type: 'n8n-nodes-base.code',          logic_version: '5.1 HU',\n    logic_hash: 'sha256:9a31f43fddd0107710ef07bdab54bc9efcc5ddc97817ef444cdfb5244f6bfec3' },\n  { node: 'Fresh Calendar Check',   readFrom: 'AXR Mark: Fresh Calendar Check',\n    type: 'n8n-nodes-base.googleCalendar', logic_version: null, logic_hash: null },\n  { node: 'Slot Still Free?',       readFrom: 'Slot Still Free?',\n    type: 'n8n-nodes-base.code',          logic_version: '2.0 HU',\n    logic_hash: 'sha256:76b1266865e855c45987ca4018b4be1431ec26451ef33470e8f2316de2d1c026' },\n  { node: 'Create Booking',         readFrom: 'AXR Mark: Create Booking',\n    type: 'n8n-nodes-base.googleCalendar', logic_version: null, logic_hash: null }\n];\n\n// ═══════════════════════════════════════════════════════════════════════════════\n// FO LOGIKA - fail-open burokban\n// ═══════════════════════════════════════════════════════════════════════════════\n// A passthrough MINDIG megtortenik. Ha az AXR-blokk elbukik, a __axr.error\n// hordozza a hibat (lathato lyuk), de a foglalasi valasz nem serul.\n\nconst passthrough = $input.all();\nlet axrSummary;\n\ntry {\n  const privateKeyPem = fs.readFileSync(KEY_PATH, 'utf8');\n  let pepper = null;\n  const warnings = [];\n  try {\n    pepper = loadOrCreatePepper();\n  } catch (e) {\n    warnings.push(`pepper nem olvashato/irhato (${e.message}) - customer_ref null`);\n  }\n\n  const nowIso = new Date().toISOString();\n\n  const normalizeRaw = safeGet('Normalize Payload - HU');\n  const normalizeClean = normalizeRaw ? splitAxrInput(normalizeRaw).output : null;\n  const normalizedBody = normalizeClean && normalizeClean[0]\n    ? (normalizeClean[0].body || normalizeClean[0])\n    : {};\n  const rawWebhookBody = normalizeClean && normalizeClean[0] && normalizeClean[0].originalPayload\n    ? normalizeClean[0].originalPayload\n    : normalizedBody;\n\n  const brainRaw = safeGet('The Brain (Logic)');\n  const brainClean = brainRaw ? splitAxrInput(brainRaw).output : null;\n  const brainOutput = brainClean && brainClean[0] ? brainClean[0] : {};\n  const brain = extractBrainDecision(brainOutput);\n\n  const workflowReceiptId = crypto.randomUUID();\n\n  // ── Lepes-receiptek ──────────────────────────────────────────────────────────\n  const stepReceipts = [];\n  let prevStepHash = null;\n  let sequence = 0;\n\n  for (const def of STEP_NODES) {\n    const ran = safeGet(def.node);\n    if (ran === null) continue;\n\n    const rawOutput = safeGet(def.readFrom);\n    const { input: stepInput, output: cleanOutput } =\n      rawOutput === null ? { input: undefined, output: ran } : splitAxrInput(rawOutput);\n\n    let inputHash;\n    if (stepInput === undefined) {\n      inputHash = null;\n      warnings.push(`${def.node}: nincs __axr_input marker (readFrom: ${def.readFrom}) - input_hash null`);\n    } else {\n      inputHash = sha256(stepInput);\n    }\n\n    sequence += 1;\n    const stepBody = {\n      axr_version: AXR_VERSION,\n      receipt_type: 'step',\n      receipt_id: crypto.randomUUID(),\n      workflow_receipt_id: workflowReceiptId,\n      sequence: sequence,\n      timestamp: nowIso,\n      step: {\n        node_name: def.node,\n        node_type: def.type,\n        logic_version: def.logic_version,\n        logic_hash: def.logic_hash,\n        model: null,\n        deterministic: true\n      },\n      io: {\n        input_hash: inputHash,\n        output_hash: sha256(cleanOutput),\n        input_summary: buildInputSummary(def.node, cleanOutput, normalizedBody),\n        decision: def.node === 'The Brain (Logic)' ? brain : null\n      },\n      approval: null,\n      previous_receipt_hash: prevStepHash\n    };\n    const signature = signReceipt(stepBody, privateKeyPem);\n    const stepReceipt = { ...stepBody, signature };\n    prevStepHash = sha256(stepReceipt);\n    stepReceipts.push(stepReceipt);\n  }\n\n  // ── final_status ─────────────────────────────────────────────────────────────\n  let finalStatus = brain.status;\n  const createBookingRan = safeGet('Create Booking') !== null;\n  const slotStillFreeRan = safeGet('Slot Still Free?') !== null;\n  if (brain.available && slotStillFreeRan && !createBookingRan) {\n    finalStatus = 'SLOT_TAKEN_ON_RECHECK';\n  }\n\n  // ── Workflow receipt ─────────────────────────────────────────────────────────\n  const workflowBody = {\n    axr_version: AXR_VERSION,\n    receipt_type: 'workflow',\n    receipt_id: workflowReceiptId,\n    workflow: {\n      workflow_id: 'eco-clean-geo-cluster-booking-hu',\n      workflow_version: '5.1',\n      webhook_path: 'booking-request-hu',\n      trigger_timestamp: nowIso,\n      completion_timestamp: nowIso\n    },\n    actor: {\n      agent_id: 'eco-clean-booking-hu',\n      agent_type: 'n8n-workflow',\n      operator: 'Conen Digital',\n      on_behalf_of: 'ECO Clean HU'\n    },\n    request: {\n      input_hash: sha256(rawWebhookBody),\n      customer_ref: customerRef(pepper, rawWebhookBody.name, rawWebhookBody.email, rawWebhookBody.phone)\n    },\n    outcome: {\n      final_status: finalStatus,\n      available: brain.available && finalStatus === brain.status,\n      decision_summary: buildDecisionSummary(brain, finalStatus)\n    },\n    step_chain: stepReceipts.map(r => r.receipt_id),\n    chain_root_hash: prevStepHash,\n    approval: null,\n    previous_receipt_hash: readPrevWorkflowHash()\n  };\n  const workflowSignature = signReceipt(workflowBody, privateKeyPem);\n  const workflowReceipt = { ...workflowBody, signature: workflowSignature };\n\n  const linesToAppend = [\n    ...stepReceipts.map(r => JSON.stringify(r)),\n    JSON.stringify(workflowReceipt)\n  ].join('\\n') + '\\n';\n\n  fs.appendFileSync(LOG_PATH, linesToAppend, 'utf8');\n\n  axrSummary = {\n    workflow_receipt_id: workflowReceiptId,\n    final_status: finalStatus,\n    step_count: stepReceipts.length,\n    axr_version: AXR_VERSION,\n    warnings: warnings,\n    logged_at: nowIso\n  };\n} catch (e) {\n  // FAIL-OPEN: a foglalas valaszol tovabb, a hiba hangos es lathato.\n  axrSummary = {\n    workflow_receipt_id: null,\n    final_status: null,\n    step_count: 0,\n    axr_version: AXR_VERSION,\n    error: `AXR receipt generalas elbukott: ${e.message}`,\n    warnings: [],\n    logged_at: new Date().toISOString()\n  };\n}\n\nreturn passthrough.map(item => ({\n  json: { ...item.json, __axr: axrSummary }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1616,
+        -240
+      ],
+      "id": "8a2443fd-1de6-4db7-add4-a6dd814fc8f2",
+      "name": "AXR Receipt Generator"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// AXR Mark: Check Day Schedule\n// A Calendar node nem tud sajat markert tenni - ez a mini node\n// elkapja, mit KAPOTT a Calendar node (a Normalize kimenete) es\n// mit ADOTT (sajat kimenet), majd a markert az elso itemhez fuzi.\n// ═══════════════════════════════════════════════════════════════\n\n// amit a Calendar node a bemeneten kapott:\nconst calIn  = $('Normalize Payload - HU').all().map(i => i.json);\n// amit a Calendar node kiadott (ez a mi bemenetunk):\nconst calOut = $input.all();\n\nreturn calOut.map((item, idx) => ({\n  json: idx === 0\n    ? { ...item.json, __axr_input: calIn }\n    : item.json\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        96,
+        -384
+      ],
+      "id": "a1b6a1d0-403d-4259-8401-e2cfbd4a7b55",
+      "name": "AXR Mark: Check Day Schedule"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// AXR Mark: Fresh Calendar Check\n// Elkapja, mit kapott a Fresh Calendar Check a bemeneten (a Brain\n// kimenete) es mit adott, majd a markert az elso itemhez fuzi.\n// ═══════════════════════════════════════════════════════════════\n\n// amit a Calendar node a bemeneten kapott:\nconst calIn  = $('The Brain (Logic)').all().map(i => i.json);\n// amit a Calendar node kiadott (ez a mi bemenetunk):\nconst calOut = $input.all();\n\nreturn calOut.map((item, idx) => ({\n  json: idx === 0\n    ? { ...item.json, __axr_input: calIn }\n    : item.json\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        -384
+      ],
+      "id": "58a2c916-1a4d-443f-90af-8252214bee08",
+      "name": "AXR Mark: Fresh Calendar Check"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// AXR Mark: Create Booking\n// Elkapja, mit kapott a Create Booking a bemeneten (az Available?\n// node kimenete) es mit adott (a letrejott esemeny), majd a\n// markert az elso itemhez fuzi.\n// ═══════════════════════════════════════════════════════════════\n\n// amit a Calendar node a bemeneten kapott:\nconst calIn  = $('Available? - HU').all().map(i => i.json);\n// amit a Calendar node kiadott (ez a mi bemenetunk):\nconst calOut = $input.all();\n\nreturn calOut.map((item, idx) => ({\n  json: idx === 0\n    ? { ...item.json, __axr_input: calIn }\n    : item.json\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        -528
+      ],
+      "id": "a284f027-2023-4c72-b7e2-7ee9d959bfe5",
+      "name": "AXR Mark: Create Booking"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.__axr.final_status }}",
+                    "rightValue": "ANCHOR_BOOKING",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "8e04fa07-8d7a-4365-947f-83bb95e0eb8b"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "1215e252-4a78-4838-81d9-c0244ca22323",
+                    "leftValue": "={{ $json.__axr.final_status }}",
+                    "rightValue": "SLOT_AVAILABLE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "f85dad35-f5cc-4ed7-8d7e-6e132debc210",
+                    "leftValue": "={{ $json.__axr.final_status }}",
+                    "rightValue": "SLOT_ADJUSTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "5ebcb753-1e23-476e-9ab1-2b80f3d6bf98",
+                    "leftValue": "={{ $json.__axr.final_status }}",
+                    "rightValue": "SLOT_TAKEN_ON_RECHECK",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "128a4c24-c62f-4d4f-a35c-34af50e03e94",
+                    "leftValue": "={{ $json.__axr.final_status }}",
+                    "rightValue": "ZONE_INCOMPATIBLE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "4e14750d-e714-4b40-9fbf-0e775bfefe0f",
+                    "leftValue": "={{ $json.__axr.final_status }}",
+                    "rightValue": "DAY_FULL",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1808,
+        -320
+      ],
+      "id": "e1eec61f-8a7f-421c-9675-2f75fe043fec",
+      "name": "Route by Status"
+    },
+    {
+      "parameters": {
+        "jsCode": "// AXR workflow fix: Respond Conflict template-bug kerulese.\n// A valasz-objektum osszeallitasa itt tortenik JS-ben, a Respond\n// Conflict node csak tovabbitja a $json-t. Igy fuggetlen vagyunk\n// az n8n template-engine viselkedesetol.\n\nconst conflictInfo = $('Slot Still Free?').first().json.conflictInfo || {};\n\nreturn [{\n  json: {\n    success: false,\n    error: \"SLOT_CONFLICT\",\n    message: \"Ez az időpont foglalt, kérjük válasszon másik időpontot!\",\n    conflictInfo: conflictInfo\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2176,
+        -176
+      ],
+      "id": "391b84f5-75d6-48b7-91f2-ca526a7f31f6",
+      "name": "Build Conflict Response"
+    },
+    {
+      "parameters": {
+        "jsCode": "// AXR workflow fix: Respond Error template-bug es rossz-forras kerulese.\n// A valasz-objektum osszeallitasa itt tortenik JS-ben, a Respond Error\n// node csak tovabbitja a $json-t. A Brain elutasitasi return-jei\n// adjak az ertekeket; ha valami hianyzik (pl. fallback ag), ertelmes\n// default keletkezik.\n\nconst brain = $('The Brain (Logic)').first().json;\n\nreturn [{\n  json: {\n    available: false,\n    error: brain.error || \"unknown_error\",\n    message: brain.message || \"Az időpont nem foglalható.\",\n    details: brain.details || {},\n    suggestion: brain.suggestion || {}\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2176,
+        -16
+      ],
+      "id": "77b476a9-7f23-439d-a0a9-b891831989c7",
+      "name": "Build Error Response"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Check Day Schedule": {
+      "main": [
+        [
+          {
+            "node": "AXR Mark: Check Day Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "The Brain (Logic)": {
+      "main": [
+        [
+          {
+            "node": "Fresh Calendar Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Booking": {
+      "main": [
+        [
+          {
+            "node": "AXR Mark: Create Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send email": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fresh Calendar Check": {
+      "main": [
+        [
+          {
+            "node": "AXR Mark: Fresh Calendar Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slot Still Free?": {
+      "main": [
+        [
+          {
+            "node": "Slot Free?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slot Free?": {
+      "main": [
+        [
+          {
+            "node": "Available? - HU",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AXR Receipt Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize Payload - HU",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email - Admin HU": {
+      "main": [
+        [
+          {
+            "node": "Send email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Payload - HU": {
+      "main": [
+        [
+          {
+            "node": "Check Day Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Available? - HU": {
+      "main": [
+        [
+          {
+            "node": "Create Booking",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AXR Receipt Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AXR Receipt Generator": {
+      "main": [
+        [
+          {
+            "node": "Route by Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AXR Mark: Check Day Schedule": {
+      "main": [
+        [
+          {
+            "node": "The Brain (Logic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AXR Mark: Fresh Calendar Check": {
+      "main": [
+        [
+          {
+            "node": "Slot Still Free?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AXR Mark: Create Booking": {
+      "main": [
+        [
+          {
+            "node": "AXR Receipt Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Status": {
+      "main": [
+        [
+          {
+            "node": "Send Email - Admin HU",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Email - Admin HU",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Email - Admin HU",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Conflict Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Conflict Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Conflict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "iaFQBf3VexAQkhob",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "87657ff0-9333-4126-ae8d-a001c3e42680",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e9d5914b1af3bd347e7df865ea87f9f6a8db9dbac47adf5044cde2ee85b404b8"
+  },
+  "id": "gFEnacxFtLPdBh5l",
+  "tags": []
+}
