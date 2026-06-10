@@ -123,7 +123,11 @@ function _stripVolatile(clone) {
 function signablePart(receipt) {
   const clone = { ...receipt };
   delete clone.signature;
-  if (versionAtLeast(receipt.axr_version, '0.3')) delete clone.anchor_ref;
+  // Az anchor_ref MINDEN verzional az alairas UTAN irodik (sidecar write-back),
+  // ezert sosem resze az alairt resznek. Jelenlet-alapon vagjuk le (ahogy a
+  // chainHash is), nem verzio-alapon: igy a 0.3-as sidecar altal lehorgonyzott
+  // 0.1/0.2-es (legacy) receiptek alairasa is helyesen verifikal.
+  if ('anchor_ref' in clone) delete clone.anchor_ref;
   if ('redactable' in clone) delete clone.redactable;
   return clone;
 }

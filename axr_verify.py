@@ -327,8 +327,12 @@ def _version_at_least(v, mn):
 def signable_part(receipt):
     clone = dict(receipt)
     clone.pop("signature", None)
-    if _version_at_least(receipt.get("axr_version"), "0.3"):
-        clone.pop("anchor_ref", None)
+    # Az anchor_ref MINDEN verzional az alairas UTAN irodik (sidecar
+    # write-back), ezert sosem resze az alairt resznek. Jelenlet-alapon
+    # vagjuk le (ahogy a chain_hash is), nem verzio-alapon: igy a 0.3-as
+    # sidecar altal lehorgonyzott 0.1/0.2-es receiptek is helyesen
+    # verifikalnak. (Tukor-fix a JS core.signablePart valtozasahoz.)
+    clone.pop("anchor_ref", None)
     clone.pop("redactable", None)
     return clone
 
@@ -359,7 +363,9 @@ def read_jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def verify(receipts, sths, anchors, pub_raw):
+def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None):
+    # sth_pub_raw: ha adott, az STH-alairasokat KIZAROLAG ezzel ellenorizzuk
+    sth_key = sth_pub_raw if sth_pub_raw is not None else pub_raw
     problems = []
     P = problems.append
 
@@ -409,7 +415,7 @@ def verify(receipts, sths, anchors, pub_raw):
     # 11. STH-lanc + consistency
     if sths:
         for s in sths:
-            if not verify_signature(s, pub_raw):
+            if not verify_signature(s, sth_key):
                 P("STH (tree_size=%s): ervenytelen alairas" % s.get("tree_size"))
             ts = s.get("tree_size", 0)
             if ts <= len(leaves) and mth(leaves[:ts]) != s.get("root_hash"):
@@ -446,18 +452,38 @@ def verify(receipts, sths, anchors, pub_raw):
 
 
 def main(argv):
-    if len(argv) < 3:
+    # --sth-key <pem>: kulcs-szerep szetvalasztas (0.4) - az STH-kat ezzel
+    # (es CSAK ezzel) verifikaljuk, a receipteket tovabbra is a fo kulccsal.
+    # Tukor a JS verifier --sth-key kapcsolojahoz.
+    sth_key_path = None
+    args = []
+    i = 1
+    while i < len(argv):
+        if argv[i] == "--sth-key":
+            if i + 1 >= len(argv):
+                sys.stderr.write("HIBA: --sth-key utan hianyzik a kulcsfajl\n")
+                return 2
+            sth_key_path = argv[i + 1]
+            i += 2
+        else:
+            args.append(argv[i])
+            i += 1
+    if len(args) < 2:
         sys.stderr.write("Hasznalat: python3 axr_verify.py <receipts.jsonl> <public-key.pem> "
-                         "[sth.jsonl] [anchors.jsonl]\n")
+                         "[sth.jsonl] [anchors.jsonl] [--sth-key sth-public.pem]\n")
         return 2
-    receipts = read_jsonl(argv[1])
-    with open(argv[2], "r", encoding="utf-8") as f:
+    receipts = read_jsonl(args[0])
+    with open(args[1], "r", encoding="utf-8") as f:
         pub_raw = pubkey_from_pem(f.read())
-    sths = read_jsonl(argv[3]) if len(argv) > 3 else []
-    anchors = read_jsonl(argv[4]) if len(argv) > 4 else []
+    sth_pub_raw = None
+    if sth_key_path is not None:
+        with open(sth_key_path, "r", encoding="utf-8") as f:
+            sth_pub_raw = pubkey_from_pem(f.read())
+    sths = read_jsonl(args[2]) if len(args) > 2 else []
+    anchors = read_jsonl(args[3]) if len(args) > 3 else []
     sths = [r for r in sths if r.get("record_type") == "sth"]
 
-    problems, stats = verify(receipts, sths, anchors, pub_raw)
+    problems, stats = verify(receipts, sths, anchors, pub_raw, sth_pub_raw)
     print("-" * 72)
     print("Python verifier (cross-impl mag)")
     print("Receiptek: %d  (%d workflow, %d lepes)  |  %d STH, %d horgonyzott"
