@@ -6,8 +6,8 @@
 
 A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
 
-**Current version:** 0.2 — production-tested  
-**Status:** Pilot running on one live workflow. Three pre-existing production bugs discovered and fixed because the receipts made them visible.
+**Current version:** 0.2.1 — production, anchored
+**Status:** Pilot running on one live workflow with **hourly Merkle anchoring and STH key separation in production** since June 2026. Four pre-existing production bugs discovered and fixed because the receipts made them visible — plus two bugs AXR found in itself before they could reach the live log (see below).
 
 ### Maturity by layer
 
@@ -15,8 +15,8 @@ AXR ships as one repository spanning several maturity levels. Read a feature's l
 
 | Layer | Version | Maturity |
 |-------|---------|----------|
-| Core: signing, chaining, per-step `input_hash`, canonicalization, cross-impl parity | 0.2 | **Stable** — production-tested, frozen wire format |
-| Anchoring: Merkle batching, Signed Tree Heads, monitor, OTS submission | 0.3 | **Working** — fully tested, OTS Bitcoin proof delegated to `ots verify` |
+| Core: signing, chaining, per-step `input_hash`, canonicalization, cross-impl parity | 0.2.1 | **Stable** — production-tested, frozen wire format; hardened n8n node (guarded canonicalizer, HMAC `customer_ref`, fail-open, `logic_hash`) |
+| Anchoring: Merkle batching, Signed Tree Heads, monitor, OTS submission | 0.3 | **Deployed** — hourly anchoring cron live in production (local backend; OpenTimestamps switch planned), separate STH key; OTS Bitcoin proof delegated to `ots verify` |
 | Redactable receipts, side-effect attestation, trust root | 0.4 | **Hardening** — tested, evolving; APIs may still change |
 
 The 0.2 wire format is frozen: 0.1/0.2/0.3 logs verify byte-for-byte under the current verifier. New work is additive. Released versions are intended to be cut as git tags (`v0.2.x`, `v0.3.x`, `v0.4.x`); the `main` branch is the integration line. Run `npm test` (or see CI) for the full cross-implementation suite.
@@ -77,7 +77,21 @@ Across runs on one agent, workflow receipts chain to each other. Deletion of any
 
 ---
 
-## What 0.3 adds over 0.2 (in progress)
+## What 0.2.1 adds over 0.2 (production hardening)
+
+A same-wire-format hardening pass on the production n8n node, driven by a live audit (June 2026). Existing 0.1/0.2 chains continue byte-for-byte.
+
+**Guarded canonicalizer in the node.** The inline node code had drifted behind `axr-core.js`: it still serialized `NaN`/`Infinity`/`undefined` silently (as `null` or omitted keys) instead of throwing. The node now carries the same explicit guards as the core, so a signature can never cover silently-corrupted semantics.
+
+**HMAC `customer_ref` with a generated pepper.** The plain `sha256(name|email|phone)` pseudonym was dictionary-attackable: anyone holding the log could confirm whether a known person had booked. `customer_ref` is now `HMAC-SHA256` keyed with a secret pepper that bootstraps itself next to the signing key (mode `600`) on first run. New values intentionally do not link to old ones — the old ones were weak.
+
+**Fail-open receipt generation.** The entire AXR block runs inside a try/catch. A missing key or full disk degrades to a loud `__axr.error` on the passthrough — visible in the admin email and as a gap in the chain — but never fails the customer-facing booking. Receipts must never break the business process they attest.
+
+**`logic_hash` — code fingerprints instead of hand-written labels.** Each attested Code node's receipt now carries the SHA-256 of the node's actual source alongside `logic_version`. The companion `axr-workflow-lint.js` extracts versions and fingerprints from the exported workflow JSON, compares them against the generator's constants, and **fails CI on drift** — eliminating the bug class where receipts attest a logic version that is no longer the code running (see Bug E below).
+
+---
+
+## What 0.3 adds over 0.2 — anchoring now live in production
 
 0.2 proved a record was unmodified *since signing* — but the operator held the only key and the only log, so nothing stopped silent rewriting, backdating, or keeping two divergent logs. 0.3 introduces a party the operator does not control, turning **tamper-evident** into **tamper-detectable**. The honest analogy is Certificate Transparency, not self-signed HTTPS.
 
@@ -291,7 +305,7 @@ npm test          # full suite, including JS<->Python cross-implementation parit
 
 ## Pilot workflow
 
-The protocol is implemented and running in production on a geo-cluster booking workflow for ECO Clean HU (n8n, workflow version 5.0). Six of the workflow's twenty nodes are receipt-bearing:
+The protocol is implemented and running in production on a geo-cluster booking workflow for ECO Clean HU (n8n, workflow version 5.1, node v0.2.1). Six of the workflow's twenty nodes are receipt-bearing, and since June 2026 the receipt log is **anchored hourly** by the out-of-band sidecar (227+ receipts in the Merkle tree at the time of writing), with the STH signed by a **separate key** (`--sth-key` verification path) in both verifiers:
 
 | Node | Why it earns a receipt |
 |------|------------------------|
@@ -308,7 +322,7 @@ The live receipt log contains 0.1 and 0.2 receipts verifying together as one con
 
 ## What AXR found in production
 
-Three pre-existing bugs in the pilot workflow — all present before AXR was deployed, none caused by it — became visible during 0.2 testing because the receipts contradicted what the workflow was actually doing.
+Four pre-existing bugs in the pilot workflow — all present before AXR was deployed, none caused by it — became visible because the receipts (or the tooling around them) contradicted what the workflow was actually doing.
 
 **Bug B.** Every workflow run was firing all three response branches (success email, error response, conflict response) regardless of outcome. A `ZONE_INCOMPATIBLE` rejection still sent a success email. The receipt's `final_status` made the contradiction immediate and auditable. Fix: a `Switch` node routing on `__axr.final_status`.
 
@@ -316,7 +330,19 @@ Three pre-existing bugs in the pilot workflow — all present before AXR was dep
 
 **Bug D.** A recheck conflict produced an HTTP 200 with an empty body. The receipt for the run was a valid 5-step `SLOT_TAKEN_ON_RECHECK` chain, complete and signed. The discrepancy between a correct receipt and an empty response is exactly what AXR is built to surface. Root cause: n8n 2.8.3's behavior when `=`-prefix mode combines with `JSON.stringify` in a Response Body field. Fix: a `Build Conflict Response` Code node, and the Respond node reduced to `{{ JSON.stringify($json) }}` without the `=` prefix.
 
+**Bug E.** After a routine geo-zoning bugfix bumped the Brain logic to v5.1, every receipt kept attesting `logic_version: '5.0'` — cryptographically valid signatures over a false claim about which code made the decision. A second, previously unknown mismatch (Normalize v3.3 attested as 3.2) surfaced in the same scan. Caught by the new `axr-workflow-lint.js`; fixed by code-hash fingerprints (`logic_hash`) in every receipt plus a CI gate that fails on drift. Lesson: version labels are testimony; code hashes are evidence.
+
 An accountability layer that produces honest receipts also makes silent failures loud.
+
+### Bugs AXR found in itself
+
+The same honesty applies inward. Two defects in AXR's own tooling were caught by a sandbox dry-run of the anchoring rollout — before they could touch the production log:
+
+**Cross-version anchoring broke legacy signatures.** `signablePart` stripped `anchor_ref` from the signed portion only for 0.3+ receipts, while the anchoring sidecar writes `anchor_ref` back into *every* newly covered receipt — including legacy 0.1/0.2 ones. First production run of the sidecar would have rendered the entire historical chain's signatures invalid (recoverably, but alarmingly). Fix: presence-based stripping in both implementations — `anchor_ref` is by definition written after signing and is never part of any version's signature. Regression-locked in `axr-legacy-anchor-test.js` (anchor a 0.2 log → both verifiers must accept; tamper → both must reject).
+
+**The Python verifier silently ignored `--sth-key`.** Key-role separation existed only in the JS verifier; the cross-implementation suite had never exercised the flag. Under separated keys, the Python verifier rejected every valid STH. Fix: `--sth-key` implemented in `axr_verify.py` with JS-identical semantics, covered by the same regression test.
+
+A dry-run that breaks in a sandbox is a feature. Both fixes shipped before the first production anchor was cut.
 
 ---
 
@@ -336,7 +362,11 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 
 **Anchor loop / Bitcoin proof.** *Closed at calendar level in 0.4.* `axr-anchor.js upgrade` and verifier `--online` confirm OTS calendar inclusion; final Bitcoin-block proof-of-work verification is delegated to the standard `ots verify` CLI over the recorded responses, by design (no Bitcoin SPV is reimplemented).
 
-**No generative step coverage in the live pilot.** The pilot workflow is fully deterministic. Non-deterministic (LLM) steps are supported by the schema and tested end-to-end in `axr-generative-test.js`, but not yet exercised on a live workflow.
+**No generative step coverage in the live pilot.** The pilot workflow is fully deterministic. Non-deterministic (LLM) steps are supported by the schema and tested end-to-end in `axr-generative-test.js`, but not yet exercised on a live workflow. Next planned milestone.
+
+**Monitor independence.** Anchoring is live, but the independent monitor (`axr-monitor.js`) is not yet running at a party outside the operator's infrastructure. Until it does, the anchoring layer's split-view/equivocation detection (G5/G6) remains latent protection. Being deployed.
+
+**Local anchoring backend.** The production sidecar currently uses the deterministic `local` backend. The switch to OpenTimestamps (Bitcoin) is a single flag and is planned once the local cadence has run stably.
 
 ---
 
@@ -346,7 +376,8 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 |------|-------------|
 | `axr-core.js` | Shared library: canonicalization (RFC 8785/JCS, guarded), SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree (slice-free index-range), inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`), side-effect attestation (`attestSideEffect`, `verifySideEffect`), trust root (`buildTrustRoot`, `verifyTrustRoot`, `trustRootHasKey`), incremental Merkle / MMR (`mmrAppend`, `mmrRoot`, `mmrValid`) |
 | `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
-| `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies) |
+| `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies); **0.2.1:** guarded canonicalizer, HMAC `customer_ref` + pepper bootstrap, fail-open, `logic_hash`, `AXR_DIR` env override |
+| `axr-workflow-lint.js` | **0.2.1:** CI gate against logic drift — fingerprints every attested node's code (SHA-256) in the exported workflow JSON and fails on mismatch with the generator's `logic_version`/`logic_hash` constants (`--manifest` emits fresh fingerprints) |
 | `axr-verify.js` | Standalone verifier (checks 1–14): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]`; **0.4 flags:** `--strict`, `--sth-key`, `--trust-root`, `--online` |
 | `axr_verify.py` | **Independent** zero-dependency Python verifier (own canonicalizer, pure-Python Ed25519, RFC 6962 Merkle) — cross-implementation proof |
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back; **0.4:** `upgrade` subcommand (OTS calendar confirmation) |
@@ -355,6 +386,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
 | `axr-anchor-test.js` | **0.3:** anchoring sidecar end-to-end test (idempotency, incremental anchoring, consistency) |
 | `axr-monitor-test.js` | **0.3:** monitor test (equivocation, truncation, root-mismatch, bad signature, journal compare) |
+| `axr-legacy-anchor-test.js` | **0.2.1 regression:** anchoring a legacy 0.2 log must not break signature verification — both verifiers accept post-anchor, both reject tamper (locks the cross-version `anchor_ref` fix and the Python `--sth-key` path) |
 | `axr-generative-test.js` | **0.3:** generative-step end-to-end test (generator → sidecar → verifier → monitor) |
 | `axr-redactable-test.js` | **0.4:** redactable-receipts test (build → anchor → GDPR erase → still verifies; tamper-fails) |
 | `axr-sideeffect-test.js` | **0.4:** side-effect attestation test (recheckable + provider-attested; tamper-fails) |
