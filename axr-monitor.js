@@ -98,7 +98,15 @@ function pollMonitor(opts) {
   // 2. STH-k beolvasasa, rendezes tree_size szerint
   const sths = readJsonl(opts.sthPath).filter(r => r.record_type === 'sth').sort((a, b) => a.tree_size - b.tree_size);
   if (!sths.length) {
-    N('nincs STH a fajlban - nincs mit figyelni');
+    // Ures folyam onmagaban nem artatlan: ha a journal mar tanusitott fat,
+    // a teljes kiurules a TRUNCATION legszelsosegesebb esete - korabban a
+    // korai return a 6-os check ELOTT lefutott, igy ez nema maradt.
+    const journalMaxEmpty = state.witnessed.reduce((m, w) => Math.max(m, w.tree_size), 0);
+    if (journalMaxEmpty > 0) {
+      V('TRUNCATION', `a publikalt STH-folyam KIURULT, mikozben a journal mar tanusitott egy ${journalMaxEmpty} meretu fat - a log eltunt vagy toroltek`);
+    } else {
+      N('nincs STH a fajlban - nincs mit figyelni');
+    }
     saveState(statePath, state);
     return finalize(state, violations, notices);
   }

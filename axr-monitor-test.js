@@ -131,6 +131,25 @@ async function buildHonestLog() {
     assert.ok(res.violations.some(v => v.code === 'TRUNCATION'), 'nem TRUNCATION: ' + JSON.stringify(res.violations));
   });
 
+  // ── 4b. TRUNCATION-TO-ZERO (regresszio, 2026-06-10) ──────────────────────────
+  // A korai "nincs STH a fajlban" return a 6-os check ELOTT futott le, igy a
+  // TELJESEN kiuritett folyam nema exit 0 maradt - pedig ez a truncation
+  // legszelsosegesebb esete. A fix utan: ures folyam + nem-ures journal = SERTES.
+  await check('TRUNCATION-TO-ZERO: teljesen kiuritett STH-folyam -> elfogva', () => {
+    const dir2 = newDir();
+    const st = path.join(dir2, 'state.json');
+    pollMonitor({ sthPath: honest.sthPath, publicKeyPem: pubPem, statePath: st, receiptsPath: honest.receiptsPath, now: fixedNow });
+    const emptyPath = path.join(dir2, 'sth-empty.jsonl');
+    fs.writeFileSync(emptyPath, '');
+    const res = pollMonitor({ sthPath: emptyPath, publicKeyPem: pubPem, statePath: st, now: fixedNow });
+    assert.ok(!res.ok, 'nem fogta el a teljes kiuritest');
+    assert.ok(res.violations.some(v => v.code === 'TRUNCATION'), 'nem TRUNCATION: ' + JSON.stringify(res.violations));
+    // friss (ures) journal mellett az ures folyam tovabbra is artalmatlan notice
+    const st2 = path.join(dir2, 'state2.json');
+    const res2 = pollMonitor({ sthPath: emptyPath, publicKeyPem: pubPem, statePath: st2, now: fixedNow });
+    assert.ok(res2.ok, 'ures journal + ures folyam nem lehet sertes');
+  });
+
   // ── 5. ROOT_MISMATCH ──────────────────────────────────────────────────────────
   await check('ROOT_MISMATCH: alairt STH rootja != receiptek gyokere -> elfogva', () => {
     const dir3 = newDir();
