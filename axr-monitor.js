@@ -173,7 +173,9 @@ function pollMonitor(opts) {
       const h = axr.sha256(s);
       if (seenSucc.has(h)) return;
       seenSucc.add(h);
-      const v = succ.verifyKeySuccession(s, trustRoot.root_public_key);
+      // 0.6: a horgony maga a trust-root objektum - igy az egykulcsos ES a
+      // kvorum-modu (root_keys+threshold) root is ugyanazon az uton verifikal
+      const v = succ.verifyKeySuccession(s, trustRoot);
       if (!v.ok) {
         V('KEY_CHANGED_UNAUTHORIZED', `${src}: a succession NEM verifikal a root-kulcsra: ${v.problems.join('; ')}`);
         return;
@@ -196,7 +198,7 @@ function pollMonitor(opts) {
       if (state.public_key_fingerprint !== fp)
         V('KEY_CHANGED', `a rogzitett operator-kulcs megvaltozott (journal: ${state.public_key_fingerprint.slice(0, 20)}..., most: ${fp.slice(0, 20)}...)`);
     } else {
-      const tl = succ.buildKeyTimeline(genesisPem, pool, 'sth', trustRoot.root_public_key);
+      const tl = succ.buildKeyTimeline(genesisPem, pool, 'sth', trustRoot);
       for (const p of tl.problems) N('succession-idovonal: ' + p);
       timeline = tl.timeline;
       // journal-bovites: a succession-lanc kanonikus hash-e (compare-hez).

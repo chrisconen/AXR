@@ -41,17 +41,123 @@ function keyFingerprint(pem) {
   return 'sha256:' + crypto.createHash('sha256').update(body, 'utf8').digest('hex');
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.6 - Kvorum-root (M-of-N multi-alairas)
+// ═══════════════════════════════════════════════════════════════════════════════
+// A 0.5 root-kulcsa single point of failure: ellopva hamis successionok,
+// elveszitve nincs tobb autorizalt rotacio. A 0.6 ezt M-of-N multi-alairassal
+// oldja: a trust root `root_keys` listat es `threshold`-ot deklaral, es egy
+// rekord akkor ervenyes, ha ugyanazon kanonikus body felett M KULONBOZO
+// deklaralt kulcs Ed25519-alairasa all. SZANDEKOSAN nem threshold-kriptografia
+// (BLS/FROST fuggoseget hozna): a policy-celt a multi-alairas eleri.
+//
+// OSZINTEN: a root-kompromittalas lehetosege nem szunik meg - a failure mode
+// valtozik: single-key compromise -> kvorum-kompromittalas / collusion /
+// policy-hiba / kulcs-kolokacio. A spec kvorum-policy szekcioja reszletezi.
+//
+// Determinisztikus alairas-keszlet: a `signatures` tomb key_fingerprint
+// szerint SZIGORUAN novekvo - az assemble igy rendez, a verify ki is
+// kenyszeriti. Ket azonos alairas-halmaz igy byte-azonos rekordot ad
+// (a fogyasztok pool-dedupja es lanc-hashe stabil marad).
+//
+// Az alairt uzenet: canonicalize(rekord a 'signatures' mezo NELKUL). A legacy
+// 'signature' mezo - ha valaki utolag biggyesztene ra - resze a body-nak,
+// tehat a kvorum-alairasok fedik: utolagos hozzaadasa torik.
+
+// Egy alairo reszalairasa egy (meg alairas nelkuli) body folott.
+// -> { key_fingerprint, signature }
+function signQuorumPart(body, privPem) {
+  if (body && (body.signatures !== undefined))
+    throw new Error('signQuorumPart: a body mar tartalmaz signatures mezot');
+  const priv = crypto.createPrivateKey(privPem);
+  const pubPem = crypto.createPublicKey(priv).export({ type: 'spki', format: 'pem' });
+  return {
+    key_fingerprint: keyFingerprint(pubPem),
+    signature: crypto.sign(null, Buffer.from(core.canonicalize(body), 'utf8'), priv).toString('base64')
+  };
+}
+
+// Reszalairasok osszefesulese egy kvorum-alairt rekordda. Determinisztikus
+// (fingerprint szerint rendez); duplikalt alairo = hiba (fail-closed mar itt).
+function assembleQuorum(body, parts) {
+  const seen = new Set();
+  for (const p of (parts || [])) {
+    if (!p || !p.key_fingerprint || !p.signature) throw new Error('assembleQuorum: hianyos reszalairas');
+    if (seen.has(p.key_fingerprint)) throw new Error('assembleQuorum: duplikalt alairo ' + p.key_fingerprint.slice(0, 20) + '...');
+    seen.add(p.key_fingerprint);
+  }
+  const sorted = (parts || []).slice().sort((a, b) =>
+    a.key_fingerprint < b.key_fingerprint ? -1 : a.key_fingerprint > b.key_fingerprint ? 1 : 0);
+  return { ...body, signatures: sorted };
+}
+
+// Kvorum-ellenorzes: a rekord `signatures` tombje eleri-e a threshold-ot a
+// deklaralt kulcskeszletbol. SZIGORU fail-closed (Meridian-invarians): BARMELY
+// anomalia - duplikalt alairo, nem-deklaralt kulcs, ervenytelen alairas,
+// rendezetlen sorrend - elutasitast jelent, akkor is, ha a kvorum egyebkent
+// meglenne. Egy tiszta kvorum-rekordban nincs helye szemetnek.
+// -> { ok, problems, validSigners }
+function verifyQuorumSigned(record, declaredPems, threshold) {
+  const problems = [];
+  if (!record || !Array.isArray(record.signatures) || !record.signatures.length)
+    return { ok: false, problems: ['hianyzo/ures signatures (kvorum-alairas)'], validSigners: 0 };
+  const byFp = new Map();
+  for (const pem of (declaredPems || [])) byFp.set(keyFingerprint(pem), pem);
+  const body = { ...record };
+  delete body.signatures;
+  const msg = Buffer.from(core.canonicalize(body), 'utf8');
+  let valid = 0;
+  let prevFp = null;
+  for (const part of record.signatures) {
+    if (!part || !part.key_fingerprint || !part.signature) { problems.push('hianyos alairas-bejegyzes'); continue; }
+    if (prevFp !== null && !(part.key_fingerprint > prevFp))
+      problems.push('nem-determinisztikus alairas-sorrend (nem szigoruan novekvo fingerprint): ' + part.key_fingerprint.slice(0, 20) + '...');
+    prevFp = part.key_fingerprint;
+    const pem = byFp.get(part.key_fingerprint);
+    if (!pem) { problems.push('nem-deklaralt alairo: ' + part.key_fingerprint.slice(0, 20) + '...'); continue; }
+    try {
+      const ok = crypto.verify(null, msg, crypto.createPublicKey(pem), Buffer.from(part.signature, 'base64'));
+      if (ok) valid++;
+      else problems.push('ERVENYTELEN alairas a(z) ' + part.key_fingerprint.slice(0, 20) + '... alairotol');
+    } catch (e) { problems.push('alairas-ellenorzes hiba (' + part.key_fingerprint.slice(0, 20) + '...): ' + e.message); }
+  }
+  if (valid < threshold)
+    problems.push('kvorum NEM teljesul: ' + valid + ' ervenyes alairas < threshold ' + threshold);
+  return { ok: valid >= threshold && problems.length === 0, problems, validSigners: valid };
+}
+
+// A trust root modjanak felismerese. Pontosan EGY mod lehet ervenyes.
+// -> { mode: 'single'|'quorum'|'invalid', keys, threshold, problems }
+function trustRootMode(tr) {
+  const hasSingle = !!(tr && tr.root_public_key);
+  const hasQuorum = !!(tr && (Array.isArray(tr.root_keys) || tr.threshold != null));
+  if (hasSingle && hasQuorum)
+    return { mode: 'invalid', problems: ['vegyes mod: root_public_key ES root_keys/threshold egyszerre'] };
+  if (hasQuorum) {
+    const problems = [];
+    if (!Array.isArray(tr.root_keys) || !tr.root_keys.length) problems.push('ures/hianyzo root_keys');
+    const n = Array.isArray(tr.root_keys) ? tr.root_keys.length : 0;
+    if (!Number.isInteger(tr.threshold) || tr.threshold < 1 || tr.threshold > n)
+      problems.push('ervenytelen threshold (1..' + n + ' kell legyen): ' + tr.threshold);
+    if (problems.length) return { mode: 'invalid', problems };
+    return { mode: 'quorum', keys: tr.root_keys, threshold: tr.threshold, problems: [] };
+  }
+  if (hasSingle) return { mode: 'single', keys: [tr.root_public_key], threshold: 1, problems: [] };
+  return { mode: 'invalid', problems: ['hianyzo root_public_key vagy root_keys/threshold'] };
+}
+
 // ── Genesis-tartalmu trust-root epitese (0.5) ─────────────────────────────────
 // A 0.4 trust-root provider-kulcsokat deklaral; a 0.5 ezt kiegesziti a logok
 // genesis operator-kulcsaival. Egyetlen root-kulcs alairja mindkettot.
 //   providers: [ { provider, public_keys:[pem] } ]            (0.4-bol valtozatlan)
 //   logs:      [ { log_id, genesis: { sth: pem, receipt: pem } } ]   (0.5 uj)
-function buildTrustRoot(opts, rootPrivPem, rootPubPem, now) {
+// A kozos (mod-fuggetlen) body-resz. 0.6: ha opts.root_keys/threshold van,
+// kvorum-modu body keszul (root_public_key NELKUL) - azt a kvorum irja ala.
+function buildTrustRootBody(opts, now) {
   const body = {
     axr_version: SUCCESSION_VERSION,
     record_type: 'trust_root',
     issued_at: (now || (() => new Date().toISOString()))(),
-    root_public_key: rootPubPem,
     providers: (opts.providers || []).map(p => ({
       provider: p.provider,
       public_keys: (p.public_keys || []).slice()
@@ -64,18 +170,50 @@ function buildTrustRoot(opts, rootPrivPem, rootPubPem, now) {
       }
     }))
   };
+  if (opts.root_keys || opts.threshold != null) {
+    if (!Array.isArray(opts.root_keys) || !opts.root_keys.length)
+      throw new Error('buildTrustRootBody: root_keys nem-ures tomb kell legyen');
+    if (!Number.isInteger(opts.threshold) || opts.threshold < 1 || opts.threshold > opts.root_keys.length)
+      throw new Error('buildTrustRootBody: threshold 1..' + opts.root_keys.length + ' kell legyen');
+    body.root_keys = opts.root_keys.slice();
+    body.threshold = opts.threshold;
+  }
+  return body;
+}
+
+function buildTrustRoot(opts, rootPrivPem, rootPubPem, now) {
+  const body = buildTrustRootBody(opts, now);
+  if (body.root_keys)
+    throw new Error('buildTrustRoot: kvorum-modu trust roothoz buildQuorumTrustRoot kell');
+  body.root_public_key = rootPubPem;
   const sig = crypto.sign(null, Buffer.from(core.canonicalize(body), 'utf8'),
     crypto.createPrivateKey(rootPrivPem)).toString('base64');
   return { ...body, signature: sig };
 }
 
-// A trust-root integritas-ellenorzese (a sajat root_public_key-evel verifikal-e).
-// -> { ok, problems }
+// Kenyelmi epito tesztekhez / egy-gepes ceremoniahoz: minden privat kulcs
+// helyben van. A valodi tobb-gepes folyamat a CLI sign/assemble utjan megy
+// (a body-t kulon gepeken irjak ala, a reszek utana fesulodnek ossze).
+function buildQuorumTrustRoot(opts, signerPrivPems, now) {
+  const body = buildTrustRootBody(opts, now);
+  if (!body.root_keys) throw new Error('buildQuorumTrustRoot: opts.root_keys + opts.threshold kotelezo');
+  const parts = (signerPrivPems || []).map(p => signQuorumPart(body, p));
+  return assembleQuorum(body, parts);
+}
+
+// A trust-root integritas-ellenorzese: egykulcsos modban a sajat
+// root_public_key-evel, kvorum-modban (0.6) a deklaralt root_keys
+// M-of-N kvorumaval verifikal-e. -> { ok, problems }
 function verifyTrustRoot(trustRoot) {
   const problems = [];
   if (!trustRoot || typeof trustRoot !== 'object') return { ok: false, problems: ['nem objektum'] };
   if (trustRoot.record_type !== 'trust_root') problems.push('record_type != trust_root');
-  if (!trustRoot.root_public_key) problems.push('hianyzo root_public_key');
+  const m = trustRootMode(trustRoot);
+  if (m.mode === 'invalid') return { ok: false, problems: problems.concat(m.problems) };
+  if (m.mode === 'quorum') {
+    const q = verifyQuorumSigned(trustRoot, m.keys, m.threshold);
+    return { ok: problems.length === 0 && q.ok, problems: problems.concat(q.problems) };
+  }
   if (!trustRoot.signature) problems.push('hianyzo signature');
   if (problems.length) return { ok: false, problems };
   const body = { ...trustRoot }; delete body.signature;
@@ -100,13 +238,13 @@ function genesisKey(trustRoot, logId, role) {
 //   opts: { log_id, role, predecessor_fingerprint, successor_public_key,
 //           effective_from_tree_size, reason }
 // A predecessor_fingerprint SOHA nem null (a genesis a trust-rootbol jon).
-function buildKeySuccession(opts, rootPrivPem, now) {
+function buildKeySuccessionBody(opts, now) {
   if (!ROLES.includes(opts.role)) throw new Error('ervenytelen role: ' + opts.role);
   if (!opts.predecessor_fingerprint) throw new Error('predecessor_fingerprint kotelezo (genesis a trust-rootbol jon)');
   if (!opts.successor_public_key) throw new Error('successor_public_key kotelezo');
   if (!Number.isInteger(opts.effective_from_tree_size) || opts.effective_from_tree_size < 1)
     throw new Error('effective_from_tree_size pozitiv egesz kell legyen');
-  const body = {
+  return {
     axr_version: SUCCESSION_VERSION,
     record_type: 'key_succession',
     log_id: opts.log_id,
@@ -118,14 +256,29 @@ function buildKeySuccession(opts, rootPrivPem, now) {
     reason: opts.reason || 'unspecified',
     issued_at: (now || (() => new Date().toISOString()))()
   };
+}
+
+function buildKeySuccession(opts, rootPrivPem, now) {
+  const body = buildKeySuccessionBody(opts, now);
   const sig = crypto.sign(null, Buffer.from(core.canonicalize(body), 'utf8'),
     crypto.createPrivateKey(rootPrivPem)).toString('base64');
   return { ...body, signature: sig };
 }
 
-// ── Succession-rekord ellenorzese a ROOT-kulccsal ─────────────────────────────
+// Kenyelmi epito kvorum-alairt successionhez (egy-gepes ceremonia / teszt).
+function buildQuorumKeySuccession(opts, signerPrivPems, now) {
+  const body = buildKeySuccessionBody(opts, now);
+  const parts = (signerPrivPems || []).map(p => signQuorumPart(body, p));
+  return assembleQuorum(body, parts);
+}
+
+// ── Succession-rekord ellenorzese a ROOT-horgonnyal ───────────────────────────
 // -> { ok, problems }. Strukturalis + alairas + fingerprint-konzisztencia.
-function verifyKeySuccession(succ, rootPubPem) {
+// rootAnchor: PEM string (0.5, egykulcsos) VAGY trust-root objektum (0.6) -
+// utobbinal a trust root modja dont: single -> root_public_key, quorum ->
+// M-of-N a deklaralt root_keys-bol. A trust-root sajat integritasat a hivo
+// mar ellenorizte (verifyTrustRoot) - itt csak a modjat hasznaljuk.
+function verifyKeySuccession(succ, rootAnchor) {
   const problems = [];
   if (!succ || typeof succ !== 'object') return { ok: false, problems: ['nem objektum'] };
   if (succ.record_type !== 'key_succession') problems.push('record_type != key_succession');
@@ -134,15 +287,28 @@ function verifyKeySuccession(succ, rootPubPem) {
   if (!succ.successor_public_key) problems.push('hianyzo successor_public_key');
   if (!Number.isInteger(succ.effective_from_tree_size) || succ.effective_from_tree_size < 1)
     problems.push('ervenytelen effective_from_tree_size');
-  if (!succ.signature) problems.push('hianyzo signature');
   if (problems.length) return { ok: false, problems };
   // a deklaralt successor_fingerprint tenyleg a megadott kulcse?
   if (succ.successor_fingerprint !== keyFingerprint(succ.successor_public_key))
     problems.push('successor_fingerprint nem egyezik a successor_public_key-vel');
+
+  // alairas-ut kivalasztasa a horgony tipusa szerint
+  let mode = null;
+  if (typeof rootAnchor === 'string') mode = { mode: 'single', keys: [rootAnchor], threshold: 1 };
+  else if (rootAnchor && rootAnchor.record_type === 'trust_root') {
+    mode = trustRootMode(rootAnchor);
+    if (mode.mode === 'invalid') return { ok: false, problems: problems.concat(mode.problems) };
+  } else return { ok: false, problems: problems.concat(['ervenytelen root-horgony (PEM vagy trust-root objektum kell)']) };
+
+  if (mode.mode === 'quorum') {
+    const q = verifyQuorumSigned(succ, mode.keys, mode.threshold);
+    return { ok: problems.length === 0 && q.ok, problems: problems.concat(q.problems) };
+  }
+  if (!succ.signature) return { ok: false, problems: problems.concat(['hianyzo signature']) };
   const body = { ...succ }; delete body.signature;
   try {
     const ok = crypto.verify(null, Buffer.from(core.canonicalize(body), 'utf8'),
-      crypto.createPublicKey(rootPubPem), Buffer.from(succ.signature, 'base64'));
+      crypto.createPublicKey(mode.keys[0]), Buffer.from(succ.signature, 'base64'));
     if (!ok) problems.push('a succession alairasa ERVENYTELEN a root-kulcsra');
   } catch (e) { problems.push('succession alairas-ellenorzes hiba: ' + e.message); }
   return { ok: problems.length === 0, problems };
@@ -156,11 +322,12 @@ function verifyKeySuccession(succ, rootPubPem) {
 //   genesisPem   : a role genesis-kulcsa (trust-rootbol). Ha null -> degradalt mod.
 //   successions  : key_succession rekordok (vegyes role megengedett, szurunk).
 //   role         : 'sth' | 'receipt'
-//   rootPubPem   : a pinned root-kulcs (a successionok ezzel verifikalnak).
+//   rootAnchor   : a pinned root-kulcs PEM (0.5) VAGY trust-root objektum (0.6,
+//                  kvorum-modot is tamogat) - a successionok ezzel verifikalnak.
 //
 // -> { timeline: [ { from_tree_size, pem, fingerprint, authorized } ], problems }
 //    A timeline from_tree_size szerint novekvo; az elso elem a genesis (from=0).
-function buildKeyTimeline(genesisPem, successions, role, rootPubPem) {
+function buildKeyTimeline(genesisPem, successions, role, rootAnchor) {
   const problems = [];
   if (!genesisPem) {
     // Degradalt mod: nincs root-horgonyzott genesis. Ures idovonal -> a hivo
@@ -171,7 +338,7 @@ function buildKeyTimeline(genesisPem, successions, role, rootPubPem) {
   const valid = [];
   for (const s of (successions || [])) {
     if (!s || s.record_type !== 'key_succession' || s.role !== role) continue;
-    const v = verifyKeySuccession(s, rootPubPem);
+    const v = verifyKeySuccession(s, rootAnchor);
     if (!v.ok) { problems.push('elvetett succession (effective_from=' + (s && s.effective_from_tree_size) + '): ' + v.problems.join('; ')); continue; }
     valid.push(s);
   }
@@ -247,9 +414,17 @@ module.exports = {
   ROLES,
   keyFingerprint,
   buildTrustRoot,
+  buildTrustRootBody,
+  buildQuorumTrustRoot,
   verifyTrustRoot,
+  trustRootMode,
+  signQuorumPart,
+  assembleQuorum,
+  verifyQuorumSigned,
   genesisKey,
   buildKeySuccession,
+  buildKeySuccessionBody,
+  buildQuorumKeySuccession,
   verifyKeySuccession,
   buildKeyTimeline,
   keyAtTreeSize

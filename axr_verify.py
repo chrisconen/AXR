@@ -370,10 +370,65 @@ def key_fingerprint(pem):
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+def trust_root_mode(tr):
+    # -> ("single"|"quorum", kulcs-PEM-ek, threshold) vagy None ha ervenytelen.
+    # Pontosan EGY mod lehet ervenyes (tukor a JS trustRootMode-hoz).
+    has_single = bool(tr.get("root_public_key"))
+    has_quorum = isinstance(tr.get("root_keys"), list) or tr.get("threshold") is not None
+    if has_single and has_quorum:
+        return None
+    if has_quorum:
+        keys = tr.get("root_keys")
+        m = tr.get("threshold")
+        n = len(keys) if isinstance(keys, list) else 0
+        if not n or not isinstance(m, int) or isinstance(m, bool) or m < 1 or m > n:
+            return None
+        return ("quorum", keys, m)
+    if has_single:
+        return ("single", [tr["root_public_key"]], 1)
+    return None
+
+
+def verify_quorum_signed(record, declared_pems, threshold):
+    # M-of-N multi-alairas ellenorzes - SZIGORU fail-closed (tukor a JS
+    # verifyQuorumSigned-hoz): barmely anomalia (duplikalt/nem-deklaralt
+    # alairo, ervenytelen alairas, rendezetlen sorrend) -> elutasitas.
+    sigs = record.get("signatures")
+    if not isinstance(sigs, list) or not sigs:
+        return False
+    by_fp = {key_fingerprint(p): pubkey_from_pem(p) for p in declared_pems}
+    body = {k: v for k, v in record.items() if k != "signatures"}
+    msg = canonicalize(body).encode("utf-8")
+    valid = 0
+    prev = None
+    for part in sigs:
+        if not isinstance(part, dict):
+            return False
+        fp = part.get("key_fingerprint")
+        sig = part.get("signature")
+        if not fp or not sig:
+            return False
+        if prev is not None and not (fp > prev):
+            return False  # rendezes (determinizmus) kenyszeritve; duplat is fog
+        prev = fp
+        raw = by_fp.get(fp)
+        if raw is None:
+            return False  # nem-deklaralt alairo
+        if not ed25519_verify(base64.b64decode(sig), msg, raw):
+            return False  # ervenytelen alairas deklaralt alairotol
+        valid += 1
+    return valid >= threshold
+
+
 def verify_trust_root(tr):
     if not isinstance(tr, dict) or tr.get("record_type") != "trust_root":
         return False
-    if not tr.get("root_public_key") or not tr.get("signature"):
+    mode = trust_root_mode(tr)
+    if mode is None:
+        return False
+    if mode[0] == "quorum":
+        return verify_quorum_signed(tr, mode[1], mode[2])
+    if not tr.get("signature"):
         return False
     body = {k: v for k, v in tr.items() if k != "signature"}
     return ed25519_verify(base64.b64decode(tr["signature"]),
@@ -381,7 +436,9 @@ def verify_trust_root(tr):
                           pubkey_from_pem(tr["root_public_key"]))
 
 
-def verify_key_succession(s, root_pub_raw):
+def verify_key_succession(s, root_anchor):
+    # root_anchor: nyers publikus kulcs (bytes, 0.5 egykulcsos ut) VAGY
+    # trust-root dict (0.6: a modja dont - single vagy kvorum).
     if not isinstance(s, dict) or s.get("record_type") != "key_succession":
         return False
     if s.get("role") not in ("sth", "receipt"):
@@ -391,13 +448,22 @@ def verify_key_succession(s, root_pub_raw):
     ef = s.get("effective_from_tree_size")
     if not isinstance(ef, int) or isinstance(ef, bool) or ef < 1:
         return False
-    if not s.get("signature"):
-        return False
     if s.get("successor_fingerprint") != key_fingerprint(s["successor_public_key"]):
+        return False
+    if isinstance(root_anchor, dict):
+        mode = trust_root_mode(root_anchor)
+        if mode is None:
+            return False
+        if mode[0] == "quorum":
+            return verify_quorum_signed(s, mode[1], mode[2])
+        root_raw = pubkey_from_pem(mode[1][0])
+    else:
+        root_raw = root_anchor
+    if not s.get("signature"):
         return False
     body = {k: v for k, v in s.items() if k != "signature"}
     return ed25519_verify(base64.b64decode(s["signature"]),
-                          canonicalize(body).encode("utf-8"), root_pub_raw)
+                          canonicalize(body).encode("utf-8"), root_raw)
 
 
 def genesis_key(tr, log_id, role):
@@ -485,9 +551,8 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
     receipt_tl = sth_tl = None
     if trust_root is not None:
         if not verify_trust_root(trust_root):
-            P("a trust-root NEM verifikal (a sajat root-kulcsaval)")
+            P("a trust-root NEM verifikal (a sajat root-kulcsaval/kvorumaval)")
         else:
-            root_raw = pubkey_from_pem(trust_root["root_public_key"])
             eff_log = log_id or (sths[0].get("log_id") if sths else None)
             if not eff_log and len(trust_root.get("logs") or []) == 1:
                 eff_log = trust_root["logs"][0].get("log_id")
@@ -502,7 +567,7 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                 if h in seen:
                     continue
                 seen.add(h)
-                if not verify_key_succession(rec, root_raw):
+                if not verify_key_succession(rec, trust_root):
                     P("%s: key_succession NEM verifikal a root-kulcsra (role=%s, effective_from=%s)"
                       % (src, rec.get("role"), rec.get("effective_from_tree_size")))
                     continue
@@ -512,10 +577,11 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                     continue
                 pool.append(rec)
             if eff_log:
+                # a pool mar root-verifikalt; az idovonal-epitonek horgony nem kell
                 receipt_tl = build_key_timeline(genesis_key(trust_root, eff_log, "receipt"),
-                                                pool, "receipt", root_raw, problems)
+                                                pool, "receipt", None, problems)
                 sth_tl = build_key_timeline(genesis_key(trust_root, eff_log, "sth"),
-                                            pool, "sth", root_raw, problems)
+                                            pool, "sth", None, problems)
 
     # 1. alairasok - idovonallal a receipt a levelpozicioja (leaf_index+1)
     # szerinti kulccsal verifikal; idovonal nelkul a regi egykulcsos ut

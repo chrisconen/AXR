@@ -151,9 +151,12 @@ if (ARGS.trustRoot) {
     console.error('HIBA: a --trust-root nem olvashato/ervenytelen JSON: ' + e.message);
     process.exit(2);
   }
-  const trChk = core.verifyTrustRoot(trustRoot);
+  // 0.6: a succession-modul verifyTrustRoot-ja az egykulcsos ES a kvorum-modu
+  // (root_keys + threshold, M-of-N multi-alairas) trust rootot is kezeli; az
+  // egykulcsos eset viselkedese a core-eval azonos.
+  const trChk = succ.verifyTrustRoot(trustRoot);
   if (!trChk.ok) {
-    console.error('HIBA: a --trust-root nem verifikal (a root-kulccsal): ' + trChk.problems.join('; '));
+    console.error('HIBA: a --trust-root nem verifikal (a root-kulcsokkal): ' + trChk.problems.join('; '));
     process.exit(2);
   }
 }
@@ -456,7 +459,7 @@ function buildTimelineForRole(role) {
     const h = sha256(rec);
     if (seen.has(h)) return;
     seen.add(h);
-    const v = succ.verifyKeySuccession(rec, trustRoot.root_public_key);
+    const v = succ.verifyKeySuccession(rec, trustRoot);
     if (!v.ok) {
       problem(`${src}: a key_succession NEM verifikal a root-kulcsra: ${v.problems.join('; ')}`);
       return;
@@ -471,7 +474,7 @@ function buildTimelineForRole(role) {
   if (role === 'sth')
     for (const sth of sths)
       if (sth.embedded_succession) add(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
-  const tl = succ.buildKeyTimeline(genesisPem, pool, role, trustRoot.root_public_key);
+  const tl = succ.buildKeyTimeline(genesisPem, pool, role, trustRoot);
   for (const p of tl.problems) notice(`kulcs-idovonal (${role}): ${p}`);
   // elore letrehozott kulcs-objektumok (ne minden receiptnel parse-oljunk PEM-et)
   for (const e of tl.timeline) e.keyObj = crypto.createPublicKey(e.pem);
