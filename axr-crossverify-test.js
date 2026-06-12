@@ -29,13 +29,21 @@ async function check(name, fn) {
   catch (e) { console.log(`  HIBA - ${name}\n        ${e.message}`); process.exitCode = 1; }
 }
 
-function pythonAvailable() {
-  try { execFileSync('python3', ['--version'], { stdio: 'pipe' }); return true; }
-  catch (e) { return false; }
+// Interpreter-felderites: python3, majd python (Windowson gyakran csak ez van;
+// a Store-fele python3 alias stub, ami 9009-cel bukik). Csak Python 3 fogadhato el.
+function findPython() {
+  for (const cand of ['python3', 'python']) {
+    try {
+      const v = execFileSync(cand, ['--version'], { encoding: 'utf8', stdio: 'pipe' });
+      if (/^Python 3\./.test(v.trim())) return cand;
+    } catch (e) { /* kovetkezo jelolt */ }
+  }
+  return null;
 }
+const PYTHON = findPython();
 
-if (!pythonAvailable()) {
-  console.log('  SKIP - python3 nem elerheto; a cross-impl teszt kihagyva.');
+if (!PYTHON) {
+  console.log('  SKIP - python3/python (3.x) nem elerheto; a cross-impl teszt kihagyva.');
   console.log('EREDMENY: kihagyva (nincs python3).');
   process.exit(0);
 }
@@ -49,7 +57,7 @@ const PYDIR = __dirname;
 function runPyVerify(dir) {
   const args = [path.join(PYDIR, 'axr_verify.py'), path.join(dir, 'receipts.jsonl'),
     path.join(dir, 'public-key.pem'), path.join(dir, 'sth.jsonl'), path.join(dir, 'anchors.jsonl')];
-  try { return { code: 0, out: execFileSync('python3', args, { encoding: 'utf8' }) }; }
+  try { return { code: 0, out: execFileSync(PYTHON, args, { encoding: 'utf8' }) }; }
   catch (e) { return { code: e.status == null ? -1 : e.status, out: (e.stdout || '').toString() }; }
 }
 function runJsVerify(dir) {
@@ -136,7 +144,7 @@ async function buildLog(dir) {
       'print("OK" if bad == 0 else ("BAD=%d" % bad))\n' +
       'sys.exit(1 if bad else 0)\n');
     let out, code = 0;
-    try { out = execFileSync('python3', [driver, vecPath], { encoding: 'utf8' }); }
+    try { out = execFileSync(PYTHON, [driver, vecPath], { encoding: 'utf8' }); }
     catch (e) { code = e.status; out = (e.stdout || '') + (e.stderr || ''); }
     fs.rmSync(dir, { recursive: true, force: true });
     assert.strictEqual(code, 0, `a Python kanonizalas eltert a JS-tol:\n${out}`);
