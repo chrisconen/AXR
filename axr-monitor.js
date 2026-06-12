@@ -35,8 +35,15 @@
 //   node axr-monitor.js poll <sth.jsonl> <public-key.pem> \
 //        [--state monitor-state.json] [--receipts receipts.jsonl] \
 //        [--anchors anchors.jsonl] [--log-id axr:agent:v1] \
-//        [--trust-root trust-root.json] [--successions successions.jsonl]
+//        [--trust-root trust-root.json] [--successions successions.jsonl] \
+//        [--ocsf-out <fajl|->] [--webhook <url>]
+//        [--webhook-token <token> | --webhook-token-file <fajl> | AXR_WEBHOOK_TOKEN env]
 //   node axr-monitor.js compare <monitor-state-A.json> <monitor-state-B.json>
+//
+// OCSF / webhook (0.5+): --ocsf-out a sertesek/eletciklus-jelzesek OCSF
+// Detection Finding alakjat irja (JSONL; '-' = stdout); --webhook ugyanezt
+// POST-olja egy generikus HTTP(S) vegpontra (axr-ocsf.js, axr-webhook.js).
+// Mindketto best-effort export: a kilepesi kodot a detekcio hatarozza meg.
 //
 // Nulla kulso fuggoseg - csak a Node beepitett moduljai + a kozos axr-core.js.
 // Kilepesi kod: 0 ha minden konzisztens, 1 ha sertest talal, 2 ha rossz hasznalat.
@@ -302,7 +309,11 @@ function pollMonitor(opts) {
 function finalize(state, violations, notices) {
   return { ok: violations.length === 0, violations, notices,
            witnessedCount: state.witnessed.length,
-           journalMax: state.witnessed.reduce((m, w) => Math.max(m, w.tree_size), 0) };
+           journalMax: state.witnessed.reduce((m, w) => Math.max(m, w.tree_size), 0),
+           // export-kontextus (0.5+, OCSF/webhook): a findinghez kell a log
+           // azonositoja es az aktiv kulcs - additiv mezok, semmit nem tornek
+           logId: state.log_id || null,
+           activeKeyFingerprint: state.active_key_fingerprint || state.public_key_fingerprint || null };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -360,7 +371,7 @@ if (require.main === module) {
   if (cmd === 'poll') {
     const [sthPath, keyPath] = positional;
     if (!sthPath || !keyPath) {
-      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl]');
+      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl] [--ocsf-out <fajl|->] [--webhook <url>] [--webhook-token <token> | --webhook-token-file <fajl> | AXR_WEBHOOK_TOKEN env]');
       process.exit(2);
     }
     const publicKeyPem = fs.readFileSync(keyPath, 'utf8');
@@ -371,7 +382,44 @@ if (require.main === module) {
       successions: flags.successions ? readJsonl(flags.successions) : undefined
     });
     printResult('Monitor poll', res);
-    process.exit(res.ok ? 0 : 1);
+
+    // OCSF-export / webhook (0.5+): a detekcio eredmenye (exit code, journal) a
+    // hiteles; az export es a kezbesites best-effort, a kilepesi kodot nem
+    // valtoztatja. Egy elerheteetlen SIEM nem nemithatja el a monitort.
+    if (!flags['ocsf-out'] && !flags.webhook) process.exit(res.ok ? 0 : 1);
+    const ocsf = require('./axr-ocsf');
+    const findings = ocsf.toDetectionFindings(res, {
+      logId: flags['log-id'] || res.logId,
+      productVersion: require('./package.json').version
+    });
+    if (flags['ocsf-out']) {
+      const out = findings.map(f => JSON.stringify(f)).join('\n') + (findings.length ? '\n' : '');
+      if (flags['ocsf-out'] === '-') process.stdout.write(out);
+      else fs.writeFileSync(flags['ocsf-out'], out);
+      console.log(`OCSF: ${findings.length} finding -> ${flags['ocsf-out'] === '-' ? 'stdout' : flags['ocsf-out']}`);
+    }
+    if (flags.webhook && findings.length) {
+      // Token-feloldas (Meridian-review nyoman): a CLI-arg lathato a process-
+      // listaban es a shell-historyban, ezert fajl es kornyezeti valtozo is
+      // tamogatott. Prioritas: --webhook-token > --webhook-token-file >
+      // AXR_WEBHOOK_TOKEN env.
+      let webhookToken = flags['webhook-token'] || null;
+      if (!webhookToken && flags['webhook-token-file'])
+        webhookToken = fs.readFileSync(flags['webhook-token-file'], 'utf8').trim();
+      if (!webhookToken && process.env.AXR_WEBHOOK_TOKEN)
+        webhookToken = process.env.AXR_WEBHOOK_TOKEN;
+      if (/^http:/i.test(flags.webhook))
+        console.log('Webhook: FIGYELEM - http (titkositatlan) cel: a findingok plaintextben mennek at a halozaton.');
+      require('./axr-webhook').deliver(flags.webhook, findings, { token: webhookToken })
+        .then(d => {
+          if (d.delivered) console.log(`Webhook: kezbesitve (${findings.length} finding, HTTP ${d.status}).`);
+          else console.log(`Webhook: KEZBESITES SIKERTELEN (${d.attempts} kiserlet): ${d.error} - a detekcio eredmenye ettol fuggetlenul ervenyes.`);
+          process.exit(res.ok ? 0 : 1);
+        });
+    } else {
+      if (flags.webhook) console.log('Webhook: nincs finding, nincs kuldes.');
+      process.exit(res.ok ? 0 : 1);
+    }
   } else if (cmd === 'compare') {
     const [aPath, bPath] = positional;
     if (!aPath || !bPath) {
