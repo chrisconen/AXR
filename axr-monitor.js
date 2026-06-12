@@ -54,6 +54,7 @@ const path = require('path');
 const crypto = require('crypto');
 const axr = require('./axr-core');
 const succ = require('./axr-succession');
+const control = require('./axr-control');
 
 const LEAF_TYPES = ['step', 'workflow', 'identity'];
 const MONITOR_VERSION = '0.5';
@@ -228,6 +229,19 @@ function pollMonitor(opts) {
     };
     for (const r of (opts.revocations || [])) addRev(r, 'kulso revokacio');
 
+    // 0.7: control log. A rekordjai ugyanazon az uton verifikalnak es ugyanabba
+    // a poolba dedupolodnak (sth-role succession / revokacio); a receipt-role
+    // governance-t a monitor nem fogyasztja, de a verify-jat itt is lefuttatjuk
+    // (ervenytelen rekord = ugyanaz a kod, mint kulso forrasnal). A commitment-
+    // es withholding-ellenorzes lentebb, az STH-k feldolgozasakor.
+    const controlRecords = opts.control || [];
+    controlRecords.forEach((rec, i) => {
+      if (!rec || typeof rec !== 'object') { V('CONTROL_ROOT_MISMATCH', `control[${i}]: nem objektum`); return; }
+      if (rec.record_type === 'key_succession') addSucc(rec, `control[${i}]`);
+      else if (rec.record_type === 'key_revocation') addRev(rec, `control[${i}]`);
+      else V('CONTROL_ROOT_MISMATCH', `control[${i}]: ismeretlen control record_type (${rec.record_type}) - fail-closed`);
+    });
+
     if (!genesisPem) {
       // degradalt mod: nincs root-horgonyzott genesis ehhez a loghoz -> a regi
       // TOFU-pinning marad (fail-closed: minden kulcsvaltas kritikus)
@@ -259,6 +273,66 @@ function pollMonitor(opts) {
           state.public_key_fingerprint = fp;
         } else {
           V('KEY_CHANGED_UNAUTHORIZED', `a pinned operator-kulcs megvaltozott, es az uj kulcs NINCS root-autorizalt idovonalon (journal: ${state.public_key_fingerprint.slice(0, 20)}..., most: ${fp.slice(0, 20)}...)`);
+        }
+      }
+
+      // ── 0.7: control-log commitment + withholding/downgrade ─────────────────
+      // A commitolt STH-k (control_root_hash jelen) sorrendben. Szabalyok:
+      //   - a commitment a tenyleges control log ellen (control.checkSthCommitment);
+      //   - withheld (rovidebb/hianyzo control log) -> eszkalacio: elso eszlelt
+      //     = CONTROL_LAG (megjegyzes + journal-marker), ismetlodes = CONTROL_WITHHELD;
+      //   - DOWNGRADE: ha korabbi STH commitolt, kesobbi nem;
+      //   - append-only a commitolt STH-k kozott (control consistency);
+      //   - journal-pin: a legnagyobb latott control_size + gyoker (zsugorodas
+      //     ket poll kozott -> CONTROL_NON_APPEND_ONLY).
+      const sortedByTree = sths.slice().sort((a, b) => a.tree_size - b.tree_size);
+      const committedSths = sortedByTree.filter(t => typeof t.control_root_hash === 'string');
+      const anyCommitment = committedSths.length > 0 || (state.control_committed === true);
+      if (anyCommitment) {
+        // DOWNGRADE: a journal mar latott commitmentet, vagy egy korabbi STH
+        // commitolt, de a legnagyobb fa-meretu mar nem
+        const topSth = sortedByTree[sortedByTree.length - 1];
+        const topCommits = typeof topSth.control_root_hash === 'string';
+        // DOWNGRADE: a legnagyobb fa-meretu STH nem commitol, de volt commitment -
+        // akar egy korabbi STH-ban ebben a pollban, akar egy korabbi pollban
+        if (!topCommits && (state.control_committed || committedSths.length > 0))
+          V('CONTROL_DOWNGRADE', `a legnagyobb STH (tree_size=${topSth.tree_size}) NEM commitol control-keszletet, de korabban volt commitment - revokacio-rejtes kiserlet`);
+        let prevCommitted = null;
+        let withheldThisPoll = false;
+        for (const sth of committedSths) {
+          const chk = control.checkSthCommitment(sth, controlRecords);
+          if (chk.withheld) {
+            withheldThisPoll = true;
+          } else if (!chk.ok) {
+            V('CONTROL_ROOT_MISMATCH', `STH (tree_size=${sth.tree_size}): ${chk.problems.join('; ')}`);
+          }
+          if (prevCommitted) {
+            const cc = control.checkControlConsistency(prevCommitted, sth, controlRecords);
+            for (const p of cc.problems) V('CONTROL_NON_APPEND_ONLY', `STH ${prevCommitted.tree_size} -> ${sth.tree_size}: ${p}`);
+          }
+          prevCommitted = sth;
+        }
+        // withholding-eszkalacio (NEXUS race-fix): egy poll-ciklusnyi turelem
+        if (withheldThisPoll) {
+          if (state.control_lag_seen)
+            V('CONTROL_WITHHELD', `a publikalt control log rovidebb a commitolt control_size-nal MAR MASODIK pollban - a governance-keszletet visszatartjak`);
+          else {
+            N('CONTROL_LAG: a control log rovidebb a commitolt control_size-nal - lehet replikacios kesleltetes; a kovetkezo poll donti el');
+            state.control_lag_seen = true;
+          }
+        } else {
+          state.control_lag_seen = false;
+        }
+        // journal-pin: legnagyobb commitolt control_size + gyoker; zsugorodas tilos
+        const topCommitted = committedSths[committedSths.length - 1];
+        if (topCommitted) {
+          if (state.control_max_size != null && topCommitted.control_size < state.control_max_size)
+            V('CONTROL_NON_APPEND_ONLY', `a commitolt control_size csokkent ket poll kozott (journal: ${state.control_max_size}, most: ${topCommitted.control_size}) - a governance-keszletet zsugoritottak`);
+          if (state.control_max_size == null || topCommitted.control_size >= state.control_max_size) {
+            state.control_max_size = topCommitted.control_size;
+            state.control_root_hash = topCommitted.control_root_hash;
+          }
+          state.control_committed = true;
         }
       }
     }
@@ -415,7 +489,7 @@ if (require.main === module) {
   if (cmd === 'poll') {
     const [sthPath, keyPath] = positional;
     if (!sthPath || !keyPath) {
-      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl] [--revocations revocations.jsonl] [--ocsf-out <fajl|->] [--webhook <url>] [--webhook-token <token> | --webhook-token-file <fajl> | AXR_WEBHOOK_TOKEN env]');
+      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl] [--revocations revocations.jsonl] [--control control.jsonl] [--ocsf-out <fajl|->] [--webhook <url>] [--webhook-token <token> | --webhook-token-file <fajl> | AXR_WEBHOOK_TOKEN env]');
       process.exit(2);
     }
     const publicKeyPem = fs.readFileSync(keyPath, 'utf8');
@@ -424,7 +498,8 @@ if (require.main === module) {
       receiptsPath: flags.receipts, anchorsPath: flags.anchors, logId: flags['log-id'],
       trustRootPath: flags['trust-root'],
       successions: flags.successions ? readJsonl(flags.successions) : undefined,
-      revocations: flags.revocations ? readJsonl(flags.revocations) : undefined
+      revocations: flags.revocations ? readJsonl(flags.revocations) : undefined,
+      control: flags.control ? readJsonl(flags.control) : undefined
     });
     printResult('Monitor poll', res);
 
