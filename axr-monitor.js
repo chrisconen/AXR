@@ -16,6 +16,17 @@
 //     receiptek Merkle-gyokerevel (ha a monitor megkapja a recepteket)
 //   - BAD_SIGNATURE: egy STH alairasa ervenytelen a rogzitett kulcsra
 //
+// 0.5 - key succession (opcionalis trust-root mellett):
+//   A 0.3 monitor EGY kulcsot pinnel (TOFU), igy a legitim rotacio is
+//   megkulonboztethetetlen a csendes kulcscseretol. Trust-roottal a monitor a
+//   FUGGETLEN root-kulcsban bizik: a genesis kulcs a trust-rootbol jon, minden
+//   tovabbi kulcsot root-alairt key_succession autorizal. Az STH-kba beagyazott
+//   successiont (embedded_succession) a monitor ELOBB a root-kulccsal
+//   verifikalja, es csak utana hasznalja az uj kulcsot STH-ellenorzesre.
+//   Uj kodok: KEY_ROTATED_AUTHORIZED (megjegyzes - a rotacio root-autorizalt)
+//   es KEY_CHANGED_UNAUTHORIZED (SERTES - kulcsvaltas root-autorizacio nelkul).
+//   Trust-root NELKUL minden a regi: TOFU-pinning, KEY_CHANGED.
+//
 // Ket parancs:
 //   poll    - egy operator STH-fajljanak figyelese, a journal frissitese
 //   compare - ket monitor journaljanak osszevetese (split-view bizonyitas)
@@ -23,7 +34,8 @@
 // Hasznalat:
 //   node axr-monitor.js poll <sth.jsonl> <public-key.pem> \
 //        [--state monitor-state.json] [--receipts receipts.jsonl] \
-//        [--anchors anchors.jsonl] [--log-id axr:agent:v1]
+//        [--anchors anchors.jsonl] [--log-id axr:agent:v1] \
+//        [--trust-root trust-root.json] [--successions successions.jsonl]
 //   node axr-monitor.js compare <monitor-state-A.json> <monitor-state-B.json>
 //
 // Nulla kulso fuggoseg - csak a Node beepitett moduljai + a kozos axr-core.js.
@@ -34,9 +46,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const axr = require('./axr-core');
+const succ = require('./axr-succession');
 
 const LEAF_TYPES = ['step', 'workflow', 'identity'];
-const MONITOR_VERSION = '0.3';
+const MONITOR_VERSION = '0.5';
 
 function readJsonl(p) {
   if (!p || !fs.existsSync(p)) return [];
@@ -71,12 +84,19 @@ function saveState(statePath, state) {
 //   anchorsPath  (opc.)     - kulso anchor cross-check (offline: jelzes)
 //   logId        (opc.)     - elvart log_id (elso futaskor rogzul)
 //   now          (opc.)     - () => ISO timestamp (tesztelhetoseghez)
+//   trustRoot    (opc.)     - 0.5 trust-root objektum (root-kulcs + genesisek).
+//                             Ha megvan, az STH-verify kulcs-idovonal alapu;
+//                             nelkule a regi TOFU-pinning viselkedes fut.
+//   trustRootPath(opc.)     - mint a trustRoot, fajlbol betoltve
+//   successions  (opc.)     - kulso (nem beagyazott) key_succession rekordok
 function pollMonitor(opts) {
   if (!opts.sthPath) throw new Error('sthPath kotelezo');
   if (!opts.publicKeyPem) throw new Error('publicKeyPem kotelezo');
   const statePath = opts.statePath || sibling(opts.sthPath, 'monitor-state.json');
   const now = opts.now || (() => new Date().toISOString());
   const fp = keyFingerprint(opts.publicKeyPem);
+  const trustRoot = opts.trustRoot ||
+    (opts.trustRootPath ? JSON.parse(fs.readFileSync(opts.trustRootPath, 'utf8')) : null);
 
   const violations = [];
   const notices = [];
@@ -84,12 +104,15 @@ function pollMonitor(opts) {
   const N = (msg) => notices.push(msg);
 
   // 1. journal betoltese / inicializalas + kulcs es log_id rogzitese
+  // Trust-root mellett a kulcs-valtas megitelese az idovonal dolga (lasd 3/b),
+  // ezert a TOFU-fele KEY_CHANGED itt csak trust-root NELKUL fut - igy a regi
+  // (0.3/0.4) viselkedes valtozatlan marad.
   let state = loadState(statePath);
   if (!state) {
     state = { axr_monitor_version: MONITOR_VERSION, log_id: opts.logId || null,
               public_key_fingerprint: fp, witnessed: [] };
   } else {
-    if (state.public_key_fingerprint !== fp)
+    if (!trustRoot && state.public_key_fingerprint !== fp)
       V('KEY_CHANGED', `a rogzitett operator-kulcs megvaltozott (journal: ${state.public_key_fingerprint.slice(0, 20)}..., most: ${fp.slice(0, 20)}...)`);
     if (opts.logId && state.log_id && state.log_id !== opts.logId)
       V('LOG_ID_CHANGED', `a log_id megvaltozott (journal: ${state.log_id}, most: ${opts.logId})`);
@@ -118,12 +141,97 @@ function pollMonitor(opts) {
   const haveLeaves = leafHashes.length > 0;
   if (!haveLeaves && opts.receiptsPath) N('a receipts.jsonl ures vagy hianyzik - a root/consistency ellenorzes kimarad');
 
+  // 3/b. (0.5, opcionalis) kulcs-idovonal a trust-rootbol + successionokbol.
+  // SORREND-INVARIANS: minden succession (beagyazott vagy kulso) ELOBB a pinned
+  // root-kulccsal verifikalodik, es csak az ervenyesek epitik az idovonalat -
+  // az STH-alairast SOSEM ellenorizzuk olyan kulccsal, amit nem a root autorizalt.
+  const currentMax = sths[sths.length - 1].tree_size;
+  let timeline = null;
+  if (trustRoot) {
+    const tv = succ.verifyTrustRoot(trustRoot);
+    if (!tv.ok) {
+      // fail-closed: ervenytelen trust-root mellett semmilyen kulcs-allitast
+      // nem fogadunk el - a poll itt veget er, sertessel
+      V('TRUST_ROOT_INVALID', 'a trust-root NEM verifikal: ' + tv.problems.join('; '));
+      saveState(statePath, state);
+      return finalize(state, violations, notices);
+    }
+    const effLogId = state.log_id || opts.logId || null;
+    const genesisPem = succ.genesisKey(trustRoot, effLogId, 'sth');
+    // succession-pool: a beagyazottak + a kulso forrasok, dedup, root-verify
+    const pool = [];
+    const seenSucc = new Set();
+    const addSucc = (s, src) => {
+      if (!s || typeof s !== 'object') return;
+      const h = axr.sha256(s);
+      if (seenSucc.has(h)) return;
+      seenSucc.add(h);
+      const v = succ.verifyKeySuccession(s, trustRoot.root_public_key);
+      if (!v.ok) {
+        V('KEY_CHANGED_UNAUTHORIZED', `${src}: a succession NEM verifikal a root-kulcsra: ${v.problems.join('; ')}`);
+        return;
+      }
+      if (s.role !== 'sth') { N(`${src}: role=${s.role} succession - az sth-idovonalhoz nem hasznalhato`); return; }
+      if (s.log_id !== effLogId) {
+        V('KEY_CHANGED_UNAUTHORIZED', `${src}: a succession idegen loghoz tartozik (${s.log_id} != ${effLogId})`);
+        return;
+      }
+      pool.push(s);
+    };
+    for (const sth of sths)
+      if (sth.embedded_succession) addSucc(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
+    for (const s of (opts.successions || [])) addSucc(s, 'kulso succession');
+
+    if (!genesisPem) {
+      // degradalt mod: nincs root-horgonyzott genesis ehhez a loghoz -> a regi
+      // TOFU-pinning marad (fail-closed: minden kulcsvaltas kritikus)
+      N(`DEGRADED: a trust-root nem tartalmaz sth-genesis kulcsot ehhez a loghoz (${effLogId}) - TOFU-pinning mod`);
+      if (state.public_key_fingerprint !== fp)
+        V('KEY_CHANGED', `a rogzitett operator-kulcs megvaltozott (journal: ${state.public_key_fingerprint.slice(0, 20)}..., most: ${fp.slice(0, 20)}...)`);
+    } else {
+      const tl = succ.buildKeyTimeline(genesisPem, pool, 'sth', trustRoot.root_public_key);
+      for (const p of tl.problems) N('succession-idovonal: ' + p);
+      timeline = tl.timeline;
+      // journal-bovites: a succession-lanc kanonikus hash-e (compare-hez).
+      // Determinisztikus TELJES rendezes: effective_from, majd kanonikus hash
+      // tie-break - igy ket monitor ugyanarra a halmazra ugyanazt a lanc-hash-t
+      // szamolja a beerkezesi sorrendtol fuggetlenul (NEXUS-review talalata:
+      // azonos effective_from-nal a sorrend instabil volt -> vakriasztas).
+      pool.sort((a, b) => (a.effective_from_tree_size - b.effective_from_tree_size) ||
+        axr.sha256(a).localeCompare(axr.sha256(b)));
+      state.succession_chain_hash = pool.length ? axr.sha256(pool) : null;
+      // autorizalt rotaciok jelzese (mar hatalyba lepett szegmensek)
+      for (const e of timeline) {
+        if (e.from_tree_size > 0 && e.authorized && currentMax >= e.from_tree_size)
+          N(`KEY_ROTATED_AUTHORIZED: root-autorizalt kulcsvaltas effective_from=${e.from_tree_size} (uj kulcs: ${e.fingerprint.slice(0, 20)}...)`);
+      }
+      // a monitor pinned kulcsa valtozott? az idovonal donti el, hogy legitim-e
+      if (state.public_key_fingerprint !== fp) {
+        const entry = timeline.find(e => e.fingerprint === fp);
+        if (entry && entry.authorized) {
+          N(`KEY_ROTATED_AUTHORIZED: a pinned kulcs az idovonal szerint autorizalt utodra valtott (${fp.slice(0, 20)}...)`);
+          state.public_key_fingerprint = fp;
+        } else {
+          V('KEY_CHANGED_UNAUTHORIZED', `a pinned operator-kulcs megvaltozott, es az uj kulcs NINCS root-autorizalt idovonalon (journal: ${state.public_key_fingerprint.slice(0, 20)}..., most: ${fp.slice(0, 20)}...)`);
+        }
+      }
+    }
+  }
+
   // 4. minden STH: alairas, (ha van) root-egyezes, equivocation a journal ellen
+  // Idovonal mellett minden STH-t a SAJAT tree_size-anal ervenyes kulccsal
+  // ellenorzunk (keyAtTreeSize); a genesis from=0, igy mindig van talalat.
   const journalBySize = {};
   for (const w of state.witnessed) journalBySize[w.tree_size] = w;
 
   for (const sth of sths) {
-    if (!axr.verifyReceipt(sth, opts.publicKeyPem))
+    if (timeline) {
+      const e = succ.keyAtTreeSize(timeline, sth.tree_size);
+      if (!axr.verifyReceipt(sth, e.pem))
+        V('BAD_SIGNATURE', `STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS az idovonal szerinti kulcsra (${e.fingerprint.slice(0, 20)}...) - lehetseges be-nem-jelentett kulcscsere`);
+      else if (!e.authorized)
+        V('KEY_CHANGED_UNAUTHORIZED', `STH (tree_size=${sth.tree_size}): a(z) ${e.fingerprint.slice(0, 20)}... kulcs irta ala, de a kulcsvaltas NEM autorizalt (tort/utkozo succession-lanc)`);
+    } else if (!axr.verifyReceipt(sth, opts.publicKeyPem))
       V('BAD_SIGNATURE', `STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS`);
 
     if (haveLeaves && sth.tree_size <= leafHashes.length) {
@@ -154,7 +262,6 @@ function pollMonitor(opts) {
 
   // 6. truncation: a jelenlegi max kisebb, mint a naplozott max
   const journalMax = state.witnessed.reduce((m, w) => Math.max(m, w.tree_size), 0);
-  const currentMax = sths[sths.length - 1].tree_size;
   if (currentMax < journalMax)
     V('TRUNCATION', `a log zsugorodott: a jelenlegi max tree_size (${currentMax}) kisebb a korabban naplozottnal (${journalMax}) - rekordokat tavolitottak el`);
 
@@ -182,6 +289,11 @@ function pollMonitor(opts) {
     }
   }
   state.witnessed.sort((a, b) => a.tree_size - b.tree_size);
+  // journal-bovites (0.5): a jelenleg aktiv (legnagyobb fanal ervenyes) kulcs
+  if (timeline) {
+    const active = succ.keyAtTreeSize(timeline, currentMax);
+    state.active_key_fingerprint = active ? active.fingerprint : null;
+  }
   saveState(statePath, state);
 
   return finalize(state, violations, notices);
@@ -210,6 +322,12 @@ function compareJournals(a, b) {
     conflicts.push({ log_id_mismatch: true, log_id_a: a.log_id || null, log_id_b: b.log_id || null });
   if ((a.public_key_fingerprint || null) !== (b.public_key_fingerprint || null))
     conflicts.push({ key_mismatch: true });
+  // 0.5: divergens succession-lanc = az operator ket monitornak ket kulonbozo
+  // kulcs-tortenetet mutatott (csak ha MINDKET journal latott lancot - a regi,
+  // 0.3-as journalokban a mezo hianyzik, az nem konfliktus)
+  const ca = a.succession_chain_hash || null, cb = b.succession_chain_hash || null;
+  if (ca && cb && ca !== cb)
+    conflicts.push({ succession_chain_mismatch: true, chain_a: ca, chain_b: cb });
   return { equivocationDetected: conflicts.length > 0, conflicts };
 }
 
@@ -242,13 +360,15 @@ if (require.main === module) {
   if (cmd === 'poll') {
     const [sthPath, keyPath] = positional;
     if (!sthPath || !keyPath) {
-      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...]');
+      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl]');
       process.exit(2);
     }
     const publicKeyPem = fs.readFileSync(keyPath, 'utf8');
     const res = pollMonitor({
       sthPath, publicKeyPem, statePath: flags.state,
-      receiptsPath: flags.receipts, anchorsPath: flags.anchors, logId: flags['log-id']
+      receiptsPath: flags.receipts, anchorsPath: flags.anchors, logId: flags['log-id'],
+      trustRootPath: flags['trust-root'],
+      successions: flags.successions ? readJsonl(flags.successions) : undefined
     });
     printResult('Monitor poll', res);
     process.exit(res.ok ? 0 : 1);
