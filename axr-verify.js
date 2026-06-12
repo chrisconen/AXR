@@ -74,7 +74,7 @@ const succ = require('./axr-succession');
 function parseArgs(argv) {
   const positional = [];
   const flags = { strict: false, online: false, sthKey: null, trustRoot: null,
-                  successions: null, logId: null };
+                  successions: null, revocations: null, logId: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--strict') flags.strict = true;
@@ -82,6 +82,7 @@ function parseArgs(argv) {
     else if (a === '--sth-key') flags.sthKey = argv[++i];
     else if (a === '--trust-root') flags.trustRoot = argv[++i];
     else if (a === '--successions') flags.successions = argv[++i];
+    else if (a === '--revocations') flags.revocations = argv[++i];
     else if (a === '--log-id') flags.logId = argv[++i];
     else if (a.startsWith('--')) { console.error('ismeretlen kapcsolo: ' + a); process.exit(2); }
     else positional.push(a);
@@ -93,7 +94,7 @@ const [logPath, keyPath, sthPath, anchorPath] = _pos;
 if (!logPath || !keyPath) {
   console.error('Hasznalat: node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]\n' +
     '            [--strict] [--sth-key <pem>] [--trust-root <json>] [--online]\n' +
-    '            [--successions <jsonl>] [--log-id <id>]');
+    '            [--successions <jsonl>] [--revocations <jsonl>] [--log-id <id>]');
   process.exit(2);
 }
 
@@ -177,6 +178,21 @@ if (ARGS.successions) {
   }
   if (!trustRoot) {
     console.error('HIBA: a --successions csak --trust-root mellett hasznalhato (a root-kulcs verifikalja oket)');
+    process.exit(2);
+  }
+}
+// Revokaciok (0.6): out-of-band key_revocation rekordok - csak trust-root mellett.
+let revocationRecords = [];
+if (ARGS.revocations) {
+  try {
+    revocationRecords = fs.readFileSync(ARGS.revocations, 'utf8')
+      .trim().split('\n').filter(Boolean).map(JSON.parse);
+  } catch (e) {
+    console.error('HIBA: a --revocations nem olvashato/ervenytelen: ' + e.message);
+    process.exit(2);
+  }
+  if (!trustRoot) {
+    console.error('HIBA: a --revocations csak --trust-root mellett hasznalhato');
     process.exit(2);
   }
 }
@@ -477,7 +493,20 @@ function buildTimelineForRole(role) {
   if (role === 'sth')
     for (const sth of sths)
       if (sth.embedded_succession) add(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
-  const tl = succ.buildKeyTimeline(genesisPem, pool, role, trustRoot);
+  // revokaciok (0.6): root-verifikalt, log-egyezo rekordok a timeline-ra
+  const revPool = [];
+  const seenRev = new Set();
+  revocationRecords.forEach((rec, i) => {
+    if (!rec || rec.record_type !== 'key_revocation' || rec.role !== role) return;
+    const h = sha256(rec);
+    if (seenRev.has(h)) return;
+    seenRev.add(h);
+    const v = succ.verifyKeyRevocation(rec, trustRoot);
+    if (!v.ok) { problem(`revocations[${i + 1}. sor]: a key_revocation NEM verifikal: ${v.problems.join('; ')}`); return; }
+    if (rec.log_id !== effLogId) { problem(`revocations[${i + 1}. sor]: idegen loghoz tartozik (${rec.log_id})`); return; }
+    revPool.push(rec);
+  });
+  const tl = succ.buildKeyTimeline(genesisPem, pool, role, trustRoot, revPool);
   for (const p of tl.problems) notice(`kulcs-idovonal (${role}): ${p}`);
   // elore letrehozott kulcs-objektumok (ne minden receiptnel parse-oljunk PEM-et)
   for (const e of tl.timeline) e.keyObj = crypto.createPublicKey(e.pem);
@@ -494,10 +523,24 @@ const sthTimeline = buildTimelineForRole('sth');
   for (const r of receipts) {
     let key = publicKey;
     if (receiptTimeline && leafPos.has(r)) {
-      const e = succ.keyAtTreeSize(receiptTimeline, leafPos.get(r));
+      const pos = leafPos.get(r);
+      const e = succ.keyAtTreeSize(receiptTimeline, pos);
       if (!e.authorized)
-        problem(`receipt ${r.receipt_id || '(nincs id)'} (pozicio ${leafPos.get(r)}): KEY_CHANGED_UNAUTHORIZED ` +
+        problem(`receipt ${r.receipt_id || '(nincs id)'} (pozicio ${pos}): KEY_CHANGED_UNAUTHORIZED ` +
                 `- a(z) ${e.fingerprint.slice(0, 20)}... kulcs valtasa NEM root-autorizalt`);
+      // 0.6 revokacio, 3-szintu szabaly: a hatar utani pozicio KEY_REVOKED;
+      // a hatar elotti CSAK anchorolt bizonyitekkal ervenyes (az anchor_ref
+      // inclusion proofjat a 10. ellenorzes verifikalja) - bizonyitek nelkul
+      // fail-closed, mert lopott regi kulccsal utolag gyarthato lenne
+      // "pre-boundary" receipt.
+      if (e.revoked_from != null) {
+        if (pos >= e.revoked_from)
+          problem(`receipt ${r.receipt_id || '(nincs id)'} (pozicio ${pos}): KEY_REVOKED - a(z) ` +
+                  `${e.fingerprint.slice(0, 20)}... kulcs a hatar (${e.revoked_from}) utan nem irhat ala`);
+        else if (!r.anchor_ref)
+          problem(`receipt ${r.receipt_id || '(nincs id)'} (pozicio ${pos}): revokalt kulcs korszaka, ` +
+                  `anchor-bizonyitek NELKUL - fail-closed (a hatar elotti pozicio csak anchorolt inclusion prooffal ervenyes)`);
+      }
       key = e.keyObj;
     }
     if (!verifySignature(r, key)) {
@@ -516,6 +559,9 @@ if (sths.length) {
       if (!e.authorized)
         problem(`STH (tree_size=${sth.tree_size}): KEY_CHANGED_UNAUTHORIZED - a(z) ` +
                 `${e.fingerprint.slice(0, 20)}... kulcs valtasa NEM root-autorizalt`);
+      if (e.revoked_from != null && sth.tree_size >= e.revoked_from)
+        problem(`STH (tree_size=${sth.tree_size}): KEY_REVOKED - a(z) ${e.fingerprint.slice(0, 20)}... ` +
+                `kulcs a hatar (${e.revoked_from}) utan nem irhat ala`);
       sthKeyForThis = e.keyObj;
       sthKeyNote = ' (idovonal szerinti kulcs)';
     }

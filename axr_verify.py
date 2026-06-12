@@ -510,7 +510,34 @@ def genesis_key(tr, log_id, role):
     return None
 
 
-def build_key_timeline(genesis_pem, successions, role, root_pub_raw, problems):
+def verify_key_revocation(r, root_anchor):
+    # key_revocation rekord ellenorzese (tukor a JS verifyKeyRevocation-hoz).
+    if not isinstance(r, dict) or r.get("record_type") != "key_revocation":
+        return False
+    if r.get("role") not in ("sth", "receipt"):
+        return False
+    if not r.get("revoked_fingerprint"):
+        return False
+    t = r.get("revoked_at_tree_size")
+    if not isinstance(t, int) or isinstance(t, bool) or t < 1:
+        return False
+    if isinstance(root_anchor, dict):
+        mode = trust_root_mode(root_anchor)
+        if mode is None:
+            return False
+        if mode[0] == "quorum":
+            return verify_quorum_signed(r, mode[1], mode[2])
+        raw = pubkey_from_pem(mode[1][0])
+    else:
+        raw = root_anchor
+    if not r.get("signature"):
+        return False
+    body = {k: v for k, v in r.items() if k != "signature"}
+    return ed25519_verify(base64.b64decode(r["signature"]),
+                          canonicalize(body).encode("utf-8"), raw)
+
+
+def build_key_timeline(genesis_pem, successions, role, root_pub_raw, problems, revocations=None):
     # -> idovonal: [{from, raw (nyers pubkey), fingerprint, authorized}]
     if not genesis_pem:
         return None
@@ -549,6 +576,16 @@ def build_key_timeline(genesis_pem, successions, role, root_pub_raw, problems):
                          "fingerprint": s["successor_fingerprint"], "authorized": authorized})
         active_fp = s["successor_fingerprint"]
         chain_ok = authorized
+    # 0.6: ervenyes (a hivo altal mar root-verifikalt) revokaciok alkalmazasa -
+    # a legkorabbi hatar gyoz (tukor a JS buildKeyTimeline-hoz)
+    for r in (revocations or []):
+        if not isinstance(r, dict) or r.get("role") != role:
+            continue
+        for e in timeline:
+            if e["fingerprint"] == r.get("revoked_fingerprint"):
+                rf = e.get("revoked_from")
+                if rf is None or r["revoked_at_tree_size"] < rf:
+                    e["revoked_from"] = r["revoked_at_tree_size"]
     return timeline
 
 
@@ -572,7 +609,7 @@ def read_jsonl(path):
 
 
 def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
-           trust_root=None, successions=None, log_id=None):
+           trust_root=None, successions=None, log_id=None, revocations=None):
     # sth_pub_raw: ha adott, az STH-alairasokat KIZAROLAG ezzel ellenorizzuk
     sth_key = sth_pub_raw if sth_pub_raw is not None else pub_raw
     problems = []
@@ -618,12 +655,24 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                       % (src, rec.get("log_id"), eff_log))
                     continue
                 pool.append(rec)
+            # revokaciok (0.6): root-verifikalt, log-egyezo rekordok
+            rev_pool = []
+            for i, rec in enumerate(revocations or []):
+                if not isinstance(rec, dict) or rec.get("record_type") != "key_revocation":
+                    continue
+                if not verify_key_revocation(rec, trust_root):
+                    P("revocations[%d]: a key_revocation NEM verifikal a root-horgonyra" % (i + 1))
+                    continue
+                if rec.get("log_id") != eff_log:
+                    P("revocations[%d]: idegen loghoz tartozik (%s)" % (i + 1, rec.get("log_id")))
+                    continue
+                rev_pool.append(rec)
             if eff_log:
                 # a pool mar root-verifikalt; az idovonal-epitonek horgony nem kell
                 receipt_tl = build_key_timeline(genesis_key(trust_root, eff_log, "receipt"),
-                                                pool, "receipt", None, problems)
+                                                pool, "receipt", None, problems, rev_pool)
                 sth_tl = build_key_timeline(genesis_key(trust_root, eff_log, "sth"),
-                                            pool, "sth", None, problems)
+                                            pool, "sth", None, problems, rev_pool)
 
     # 1. alairasok - idovonallal a receipt a levelpozicioja (leaf_index+1)
     # szerinti kulccsal verifikal; idovonal nelkul a regi egykulcsos ut
@@ -637,10 +686,20 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
     for r in receipts:
         key = pub_raw
         if receipt_tl is not None and id(r) in leaf_pos:
-            e = key_at_tree_size(receipt_tl, leaf_pos[id(r)])
+            pos = leaf_pos[id(r)]
+            e = key_at_tree_size(receipt_tl, pos)
             if not e["authorized"]:
                 P("receipt %s (pozicio %d): KEY_CHANGED_UNAUTHORIZED - a kulcsvaltas nem root-autorizalt"
-                  % (r.get("receipt_id"), leaf_pos[id(r)]))
+                  % (r.get("receipt_id"), pos))
+            # 0.6 revokacio, 3-szintu szabaly (tukor a JS 15. ellenorzesehez)
+            rf = e.get("revoked_from")
+            if rf is not None:
+                if pos >= rf:
+                    P("receipt %s (pozicio %d): KEY_REVOKED - a kulcs a hatar (%d) utan nem irhat ala"
+                      % (r.get("receipt_id"), pos, rf))
+                elif not r.get("anchor_ref"):
+                    P("receipt %s (pozicio %d): revokalt kulcs korszaka anchor-bizonyitek nelkul - fail-closed"
+                      % (r.get("receipt_id"), pos))
             key = e["raw"]
         if not verify_signature(r, key):
             P("ervenytelen alairas: %s (%s)" % (r.get("receipt_id"), r.get("receipt_type")))
@@ -689,6 +748,10 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                 if not e["authorized"]:
                     P("STH (tree_size=%s): KEY_CHANGED_UNAUTHORIZED - a kulcsvaltas nem root-autorizalt"
                       % s.get("tree_size"))
+                rf = e.get("revoked_from")
+                if rf is not None and s.get("tree_size", 0) >= rf:
+                    P("STH (tree_size=%s): KEY_REVOKED - a kulcs a hatar (%d) utan nem irhat ala"
+                      % (s.get("tree_size"), rf))
                 k = e["raw"]
             if not verify_signature(s, k):
                 P("STH (tree_size=%s): ervenytelen alairas" % s.get("tree_size"))
@@ -734,11 +797,12 @@ def main(argv):
     sth_key_path = None
     trust_root_path = None
     successions_path = None
+    revocations_path = None
     log_id = None
     args = []
     i = 1
     while i < len(argv):
-        if argv[i] in ("--sth-key", "--trust-root", "--successions", "--log-id"):
+        if argv[i] in ("--sth-key", "--trust-root", "--successions", "--revocations", "--log-id"):
             if i + 1 >= len(argv):
                 sys.stderr.write("HIBA: %s utan hianyzik az ertek\n" % argv[i])
                 return 2
@@ -748,6 +812,8 @@ def main(argv):
                 trust_root_path = argv[i + 1]
             elif argv[i] == "--successions":
                 successions_path = argv[i + 1]
+            elif argv[i] == "--revocations":
+                revocations_path = argv[i + 1]
             else:
                 log_id = argv[i + 1]
             i += 2
@@ -775,9 +841,11 @@ def main(argv):
         with open(trust_root_path, "r", encoding="utf-8") as f:
             trust_root = parse_trust_root_input(f.read())
     successions = read_jsonl(successions_path) if successions_path else None
+    revocations = read_jsonl(revocations_path) if revocations_path else None
 
     problems, stats = verify(receipts, sths, anchors, pub_raw, sth_pub_raw,
-                             trust_root=trust_root, successions=successions, log_id=log_id)
+                             trust_root=trust_root, successions=successions, log_id=log_id,
+                             revocations=revocations)
     print("-" * 72)
     print("Python verifier (cross-impl mag)")
     print("Receiptek: %d  (%d workflow, %d lepes)  |  %d STH, %d horgonyzott"

@@ -389,6 +389,84 @@ function verifyKeySuccession(succ, rootAnchor) {
   return { ok: problems.length === 0, problems };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.6 - Revokacio (key_revocation)
+// ═══════════════════════════════════════════════════════════════════════════════
+// A succession elore-rotal; a revokacio a kulcs alairo erejet vonja vissza egy
+// tree_size hatartol. Szemantika (3-szintu szabaly, a 0.6 scope-dontes szerint):
+//   - revoked_at ELOTTI pozicio + anchorolt bizonyitek -> ervenyes marad
+//     (a mar tanusitott mult nem irodik at);
+//   - revoked_at elotti pozicio bizonyitek NELKUL -> fail-closed (lopott regi
+//     kulccsal nem gyarthato utolagos pre-boundary narrativa);
+//   - revoked_at utani pozicio -> KEY_REVOKED.
+// A "mikor tudtuk meg" wall-clock kerdese NEM resze a bizalmi utnak: a hatar
+// a revoked_at_tree_size. A bizonyitek-kovetelmenyt a fogyasztok (verifier:
+// anchor_ref + inclusion proof; monitor: a journal + STH-folyam) ervenyesitik.
+
+const REVOCATION_VERSION = '0.6';
+
+function buildKeyRevocationBody(opts, now) {
+  if (!ROLES.includes(opts.role)) throw new Error('ervenytelen role: ' + opts.role);
+  if (!opts.revoked_fingerprint) throw new Error('revoked_fingerprint kotelezo');
+  if (!Number.isInteger(opts.revoked_at_tree_size) || opts.revoked_at_tree_size < 1)
+    throw new Error('revoked_at_tree_size pozitiv egesz kell legyen');
+  return {
+    axr_version: REVOCATION_VERSION,
+    record_type: 'key_revocation',
+    log_id: opts.log_id,
+    role: opts.role,
+    revoked_fingerprint: opts.revoked_fingerprint,
+    revoked_at_tree_size: opts.revoked_at_tree_size,
+    reason: opts.reason || 'unspecified',
+    issued_at: (now || (() => new Date().toISOString()))()
+  };
+}
+
+function buildKeyRevocation(opts, rootPrivPem, now) {
+  const body = buildKeyRevocationBody(opts, now);
+  const sig = crypto.sign(null, Buffer.from(core.canonicalize(body), 'utf8'),
+    crypto.createPrivateKey(rootPrivPem)).toString('base64');
+  return { ...body, signature: sig };
+}
+
+function buildQuorumKeyRevocation(opts, signerPrivPems, now) {
+  const body = buildKeyRevocationBody(opts, now);
+  return assembleQuorum(body, (signerPrivPems || []).map(p => signQuorumPart(body, p)));
+}
+
+// Revokacio ellenorzese a root-horgonnyal (PEM vagy trust-root objektum) -
+// szerkezetileg a verifyKeySuccession tukre. -> { ok, problems }
+function verifyKeyRevocation(rev, rootAnchor) {
+  const problems = [];
+  if (!rev || typeof rev !== 'object') return { ok: false, problems: ['nem objektum'] };
+  if (rev.record_type !== 'key_revocation') problems.push('record_type != key_revocation');
+  if (!ROLES.includes(rev.role)) problems.push('ervenytelen role');
+  if (!rev.revoked_fingerprint) problems.push('hianyzo revoked_fingerprint');
+  if (!Number.isInteger(rev.revoked_at_tree_size) || rev.revoked_at_tree_size < 1)
+    problems.push('ervenytelen revoked_at_tree_size');
+  if (problems.length) return { ok: false, problems };
+
+  let mode = null;
+  if (typeof rootAnchor === 'string') mode = { mode: 'single', keys: [rootAnchor], threshold: 1 };
+  else if (rootAnchor && rootAnchor.record_type === 'trust_root') {
+    mode = trustRootMode(rootAnchor);
+    if (mode.mode === 'invalid') return { ok: false, problems: problems.concat(mode.problems) };
+  } else return { ok: false, problems: problems.concat(['ervenytelen root-horgony (PEM vagy trust-root objektum kell)']) };
+
+  if (mode.mode === 'quorum') {
+    const q = verifyQuorumSigned(rev, mode.keys, mode.threshold);
+    return { ok: problems.length === 0 && q.ok, problems: problems.concat(q.problems) };
+  }
+  if (!rev.signature) return { ok: false, problems: problems.concat(['hianyzo signature']) };
+  const body = { ...rev }; delete body.signature;
+  try {
+    const ok = crypto.verify(null, Buffer.from(core.canonicalize(body), 'utf8'),
+      crypto.createPublicKey(mode.keys[0]), Buffer.from(rev.signature, 'base64'));
+    if (!ok) problems.push('a revokacio alairasa ERVENYTELEN a root-kulcsra');
+  } catch (e) { problems.push('revokacio alairas-ellenorzes hiba: ' + e.message); }
+  return { ok: problems.length === 0, problems };
+}
+
 // ── Kulcs-idovonal epitese genesisbol + successionokbol ───────────────────────
 // A megadott role-ra epit egy idovonalat. Minden succession a root-kulccsal
 // verifikalt; a lanc a genesis fingerprintjebol indul es predecessor-linkelt.
@@ -399,10 +477,16 @@ function verifyKeySuccession(succ, rootAnchor) {
 //   role         : 'sth' | 'receipt'
 //   rootAnchor   : a pinned root-kulcs PEM (0.5) VAGY trust-root objektum (0.6,
 //                  kvorum-modot is tamogat) - a successionok ezzel verifikalnak.
+//   revocations  : (opc., 0.6) key_revocation rekordok. A root-verifikalt,
+//                  role-egyezo revokaciok a talalt szegmensekre revoked_from
+//                  mezot tesznek: a kulcs a revoked_from-tol mar NEM irhat ala
+//                  (a fogyasztok KEY_REVOKED-kent jelentik). A revokacio a
+//                  szegmens authorized statuszat nem irja at - a mar tanusitott
+//                  mult ervenyessege a fogyasztok bizonyitek-szabalyan mulik.
 //
 // -> { timeline: [ { from_tree_size, pem, fingerprint, authorized } ], problems }
 //    A timeline from_tree_size szerint novekvo; az elso elem a genesis (from=0).
-function buildKeyTimeline(genesisPem, successions, role, rootAnchor) {
+function buildKeyTimeline(genesisPem, successions, role, rootAnchor, revocations) {
   const problems = [];
   if (!genesisPem) {
     // Degradalt mod: nincs root-horgonyzott genesis. Ures idovonal -> a hivo
@@ -472,6 +556,21 @@ function buildKeyTimeline(genesisPem, successions, role, rootAnchor) {
     chainOk = authorized;
     lastFrom = ef;
   }
+  // 0.6: revokaciok alkalmazasa - csak a root-verifikalt, role-egyezo rekordok.
+  // Ha tobb revokacio eri ugyanazt a kulcsot, a legkorabbi hatar gyoz.
+  for (const r of (revocations || [])) {
+    if (!r || r.record_type !== 'key_revocation' || r.role !== role) continue;
+    const v = verifyKeyRevocation(r, rootAnchor);
+    if (!v.ok) { problems.push('elvetett revokacio (revoked_at=' + (r && r.revoked_at_tree_size) + '): ' + v.problems.join('; ')); continue; }
+    let hit = false;
+    for (const e of timeline) {
+      if (e.fingerprint !== r.revoked_fingerprint) continue;
+      hit = true;
+      if (e.revoked_from == null || r.revoked_at_tree_size < e.revoked_from)
+        e.revoked_from = r.revoked_at_tree_size;
+    }
+    if (!hit) problems.push('revokacio nem-letezo idovonal-kulcsra: ' + r.revoked_fingerprint.slice(0, 20) + '...');
+  }
   return { timeline, problems };
 }
 
@@ -504,6 +603,11 @@ module.exports = {
   buildKeySuccessionBody,
   buildQuorumKeySuccession,
   verifyKeySuccession,
+  REVOCATION_VERSION,
+  buildKeyRevocation,
+  buildKeyRevocationBody,
+  buildQuorumKeyRevocation,
+  verifyKeyRevocation,
   buildKeyTimeline,
   keyAtTreeSize
 };

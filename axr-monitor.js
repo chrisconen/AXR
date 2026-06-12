@@ -209,6 +209,25 @@ function pollMonitor(opts) {
       if (sth.embedded_succession) addSucc(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
     for (const s of (opts.successions || [])) addSucc(s, 'kulso succession');
 
+    // 0.6: revokaciok (out-of-band, --revocations). Ervenytelen/jogosulatlan
+    // revokacio = REVOCATION_UNAUTHORIZED sertes (lehet legit kulcsot celzo
+    // DoS-kiserlet); az ervenyesek a timeline-ra kerulnek (revoked_from).
+    const revPool = [];
+    const seenRev = new Set();
+    const addRev = (r, src) => {
+      if (!r || typeof r !== 'object') return;
+      if (r.record_type !== 'key_revocation') { N(`${src}: nem key_revocation rekord - kihagyva`); return; }
+      const h = axr.sha256(r);
+      if (seenRev.has(h)) return;
+      seenRev.add(h);
+      const v = succ.verifyKeyRevocation(r, trustRoot);
+      if (!v.ok) { V('REVOCATION_UNAUTHORIZED', `${src}: a revokacio NEM verifikal a root-horgonyra: ${v.problems.join('; ')}`); return; }
+      if (r.role !== 'sth') { N(`${src}: role=${r.role} revokacio - az sth-idovonalhoz nem hasznalhato`); return; }
+      if (r.log_id !== effLogId) { V('REVOCATION_UNAUTHORIZED', `${src}: a revokacio idegen loghoz tartozik (${r.log_id} != ${effLogId})`); return; }
+      revPool.push(r);
+    };
+    for (const r of (opts.revocations || [])) addRev(r, 'kulso revokacio');
+
     if (!genesisPem) {
       // degradalt mod: nincs root-horgonyzott genesis ehhez a loghoz -> a regi
       // TOFU-pinning marad (fail-closed: minden kulcsvaltas kritikus)
@@ -216,7 +235,7 @@ function pollMonitor(opts) {
       if (state.public_key_fingerprint !== fp)
         V('KEY_CHANGED', `a rogzitett operator-kulcs megvaltozott (journal: ${state.public_key_fingerprint.slice(0, 20)}..., most: ${fp.slice(0, 20)}...)`);
     } else {
-      const tl = succ.buildKeyTimeline(genesisPem, pool, 'sth', trustRoot);
+      const tl = succ.buildKeyTimeline(genesisPem, pool, 'sth', trustRoot, revPool);
       for (const p of tl.problems) N('succession-idovonal: ' + p);
       timeline = tl.timeline;
       // journal-bovites: a succession-lanc kanonikus hash-e (compare-hez).
@@ -258,6 +277,11 @@ function pollMonitor(opts) {
         V('BAD_SIGNATURE', `STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS az idovonal szerinti kulcsra (${e.fingerprint.slice(0, 20)}...) - lehetseges be-nem-jelentett kulcscsere`);
       else if (!e.authorized)
         V('KEY_CHANGED_UNAUTHORIZED', `STH (tree_size=${sth.tree_size}): a(z) ${e.fingerprint.slice(0, 20)}... kulcs irta ala, de a kulcsvaltas NEM autorizalt (tort/utkozo succession-lanc)`);
+      // 0.6 revokacio: a hatar utani STH a revokalt kulcstol sertes; a hatar
+      // ELOTTI STH-k ervenyesek maradnak (a monitor journalja + equivocation-
+      // ellenorzes vedi a multat az ujrairas ellen)
+      if (e.revoked_from != null && sth.tree_size >= e.revoked_from)
+        V('KEY_REVOKED', `STH (tree_size=${sth.tree_size}): a(z) ${e.fingerprint.slice(0, 20)}... kulcs REVOKALT (revoked_at=${e.revoked_from}) - a hatar utan nem irhat ala`);
     } else if (!axr.verifyReceipt(sth, opts.publicKeyPem))
       V('BAD_SIGNATURE', `STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS`);
 
@@ -391,7 +415,7 @@ if (require.main === module) {
   if (cmd === 'poll') {
     const [sthPath, keyPath] = positional;
     if (!sthPath || !keyPath) {
-      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl] [--ocsf-out <fajl|->] [--webhook <url>] [--webhook-token <token> | --webhook-token-file <fajl> | AXR_WEBHOOK_TOKEN env]');
+      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl] [--revocations revocations.jsonl] [--ocsf-out <fajl|->] [--webhook <url>] [--webhook-token <token> | --webhook-token-file <fajl> | AXR_WEBHOOK_TOKEN env]');
       process.exit(2);
     }
     const publicKeyPem = fs.readFileSync(keyPath, 'utf8');
@@ -399,7 +423,8 @@ if (require.main === module) {
       sthPath, publicKeyPem, statePath: flags.state,
       receiptsPath: flags.receipts, anchorsPath: flags.anchors, logId: flags['log-id'],
       trustRootPath: flags['trust-root'],
-      successions: flags.successions ? readJsonl(flags.successions) : undefined
+      successions: flags.successions ? readJsonl(flags.successions) : undefined,
+      revocations: flags.revocations ? readJsonl(flags.revocations) : undefined
     });
     printResult('Monitor poll', res);
 
