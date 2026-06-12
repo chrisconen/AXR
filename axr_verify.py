@@ -27,6 +27,7 @@ import sys
 import json
 import base64
 import hashlib
+import re
 
 # ------------------------------------------------------------------------------
 # Kanonizalas - a JS core.canonicalize bajtra azonos masa
@@ -355,6 +356,110 @@ def verify_signature(receipt, pub_raw):
 
 
 # ------------------------------------------------------------------------------
+# Kulcs-utodlas (0.5) - a JS axr-succession.js tukre
+# ------------------------------------------------------------------------------
+# A trust-root deklaralja a genesis kulcsokat (per log_id, per role); a tovabbi
+# kulcsokat root-alairt key_succession rekordok autorizaljak. Az idovonal
+# predecessor-lancolt, az autorizacio TRANZITIV (tort szem utan nincs
+# "ongyogyulas" - tukor a JS buildKeyTimeline-hoz).
+
+def key_fingerprint(pem):
+    # A JS keyFingerprint-tel BYTE-AZONOS: PEM-fejlec nelkuli, whitespace-mentes
+    # torzs sha256-ja.
+    body = re.sub(r"\s+", "", re.sub(r"-----[^-]+-----", "", str(pem)))
+    return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def verify_trust_root(tr):
+    if not isinstance(tr, dict) or tr.get("record_type") != "trust_root":
+        return False
+    if not tr.get("root_public_key") or not tr.get("signature"):
+        return False
+    body = {k: v for k, v in tr.items() if k != "signature"}
+    return ed25519_verify(base64.b64decode(tr["signature"]),
+                          canonicalize(body).encode("utf-8"),
+                          pubkey_from_pem(tr["root_public_key"]))
+
+
+def verify_key_succession(s, root_pub_raw):
+    if not isinstance(s, dict) or s.get("record_type") != "key_succession":
+        return False
+    if s.get("role") not in ("sth", "receipt"):
+        return False
+    if not s.get("predecessor_fingerprint") or not s.get("successor_public_key"):
+        return False
+    ef = s.get("effective_from_tree_size")
+    if not isinstance(ef, int) or isinstance(ef, bool) or ef < 1:
+        return False
+    if not s.get("signature"):
+        return False
+    if s.get("successor_fingerprint") != key_fingerprint(s["successor_public_key"]):
+        return False
+    body = {k: v for k, v in s.items() if k != "signature"}
+    return ed25519_verify(base64.b64decode(s["signature"]),
+                          canonicalize(body).encode("utf-8"), root_pub_raw)
+
+
+def genesis_key(tr, log_id, role):
+    for l in tr.get("logs") or []:
+        if isinstance(l, dict) and l.get("log_id") == log_id:
+            return (l.get("genesis") or {}).get(role)
+    return None
+
+
+def build_key_timeline(genesis_pem, successions, role, root_pub_raw, problems):
+    # -> idovonal: [{from, raw (nyers pubkey), fingerprint, authorized}]
+    if not genesis_pem:
+        return None
+    timeline = [{"from": 0, "raw": pubkey_from_pem(genesis_pem),
+                 "fingerprint": key_fingerprint(genesis_pem), "authorized": True}]
+    valid = [s for s in successions
+             if isinstance(s, dict) and s.get("role") == role]
+    valid.sort(key=lambda s: s.get("effective_from_tree_size", 0))
+    active_fp = timeline[0]["fingerprint"]
+    chain_ok = True
+    # csoportositas effective_from szerint: tobb rekord ugyanarra a hatarra = FORK
+    groups = []
+    for s in valid:
+        if groups and groups[-1][0]["effective_from_tree_size"] == s["effective_from_tree_size"]:
+            groups[-1].append(s)
+        else:
+            groups.append([s])
+    for g in groups:
+        ef = g[0]["effective_from_tree_size"]
+        if len(g) > 1:
+            # FORK: fail-closed - NEM "first-wins": egyik ag sem autorizalt, es a
+            # lanc innentol vegleg mergezett (tukor a JS buildKeyTimeline-hoz)
+            problems.append("kulcs-idovonal (%s): utkozes (FORK) effective_from=%s - fail-closed" % (role, ef))
+            for s in g:
+                timeline.append({"from": ef, "raw": pubkey_from_pem(s["successor_public_key"]),
+                                 "fingerprint": s["successor_fingerprint"], "authorized": False})
+            active_fp = None
+            chain_ok = False
+            continue
+        s = g[0]
+        link_ok = active_fp is not None and s.get("predecessor_fingerprint") == active_fp
+        if not link_ok and active_fp is not None:
+            problems.append("kulcs-idovonal (%s): tort lanc effective_from=%s" % (role, ef))
+        authorized = link_ok and chain_ok
+        timeline.append({"from": ef, "raw": pubkey_from_pem(s["successor_public_key"]),
+                         "fingerprint": s["successor_fingerprint"], "authorized": authorized})
+        active_fp = s["successor_fingerprint"]
+        chain_ok = authorized
+    return timeline
+
+
+def key_at_tree_size(timeline, tree_size):
+    chosen = None
+    for e in timeline:
+        if e["from"] <= tree_size:
+            chosen = e
+        else:
+            break
+    return chosen
+
+
+# ------------------------------------------------------------------------------
 # Fo verifier
 # ------------------------------------------------------------------------------
 
@@ -363,7 +468,8 @@ def read_jsonl(path):
         return [json.loads(line) for line in f if line.strip()]
 
 
-def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None):
+def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
+           trust_root=None, successions=None, log_id=None):
     # sth_pub_raw: ha adott, az STH-alairasokat KIZAROLAG ezzel ellenorizzuk
     sth_key = sth_pub_raw if sth_pub_raw is not None else pub_raw
     problems = []
@@ -373,9 +479,62 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None):
     steps = [r for r in receipts if r.get("receipt_type") == "step"]
     wf_ids = set(w["receipt_id"] for w in workflows)
 
-    # 1. alairasok
+    # ── 15. kulcs-utodlas (0.5): idovonalak a trust-rootbol + successionokbol ──
+    # SORREND-INVARIANS: minden succession ELOBB a root-kulccsal verifikalodik;
+    # a hatar-szabaly a JS-sel byte-azonos (receipt: levelpozicio, STH: tree_size).
+    receipt_tl = sth_tl = None
+    if trust_root is not None:
+        if not verify_trust_root(trust_root):
+            P("a trust-root NEM verifikal (a sajat root-kulcsaval)")
+        else:
+            root_raw = pubkey_from_pem(trust_root["root_public_key"])
+            eff_log = log_id or (sths[0].get("log_id") if sths else None)
+            if not eff_log and len(trust_root.get("logs") or []) == 1:
+                eff_log = trust_root["logs"][0].get("log_id")
+            pool = []
+            seen = set()
+            for src, rec in ([("successions", s) for s in (successions or [])] +
+                             [("embedded", s.get("embedded_succession")) for s in sths
+                              if s.get("embedded_succession")]):
+                if not isinstance(rec, dict) or rec.get("record_type") != "key_succession":
+                    continue
+                h = sha256_str(rec)
+                if h in seen:
+                    continue
+                seen.add(h)
+                if not verify_key_succession(rec, root_raw):
+                    P("%s: key_succession NEM verifikal a root-kulcsra (role=%s, effective_from=%s)"
+                      % (src, rec.get("role"), rec.get("effective_from_tree_size")))
+                    continue
+                if rec.get("log_id") != eff_log:
+                    P("%s: key_succession idegen loghoz tartozik (%s != %s)"
+                      % (src, rec.get("log_id"), eff_log))
+                    continue
+                pool.append(rec)
+            if eff_log:
+                receipt_tl = build_key_timeline(genesis_key(trust_root, eff_log, "receipt"),
+                                                pool, "receipt", root_raw, problems)
+                sth_tl = build_key_timeline(genesis_key(trust_root, eff_log, "sth"),
+                                            pool, "sth", root_raw, problems)
+
+    # 1. alairasok - idovonallal a receipt a levelpozicioja (leaf_index+1)
+    # szerinti kulccsal verifikal; idovonal nelkul a regi egykulcsos ut
+    leaf_types = ("step", "workflow", "identity")
+    leaf_pos = {}
+    pos = 0
     for r in receipts:
-        if not verify_signature(r, pub_raw):
+        if r.get("receipt_type") in leaf_types:
+            pos += 1
+            leaf_pos[id(r)] = pos
+    for r in receipts:
+        key = pub_raw
+        if receipt_tl is not None and id(r) in leaf_pos:
+            e = key_at_tree_size(receipt_tl, leaf_pos[id(r)])
+            if not e["authorized"]:
+                P("receipt %s (pozicio %d): KEY_CHANGED_UNAUTHORIZED - a kulcsvaltas nem root-autorizalt"
+                  % (r.get("receipt_id"), leaf_pos[id(r)]))
+            key = e["raw"]
+        if not verify_signature(r, key):
             P("ervenytelen alairas: %s (%s)" % (r.get("receipt_id"), r.get("receipt_type")))
 
     # 2-4. workflow-nkenti step-lanc, chain_root, step_chain
@@ -412,10 +571,18 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None):
     leaves = [leaf_hash(r) for r in leaf_receipts]
     sth_index = {(s.get("root_hash"), s.get("tree_size")): s for s in sths}
 
-    # 11. STH-lanc + consistency
+    # 11. STH-lanc + consistency - idovonallal az STH a tree_size-anal ervenyes
+    # kulccsal verifikal (tukor a JS 15. ellenorzesehez)
     if sths:
         for s in sths:
-            if not verify_signature(s, sth_key):
+            k = sth_key
+            if sth_tl is not None:
+                e = key_at_tree_size(sth_tl, s.get("tree_size", 0))
+                if not e["authorized"]:
+                    P("STH (tree_size=%s): KEY_CHANGED_UNAUTHORIZED - a kulcsvaltas nem root-autorizalt"
+                      % s.get("tree_size"))
+                k = e["raw"]
+            if not verify_signature(s, k):
                 P("STH (tree_size=%s): ervenytelen alairas" % s.get("tree_size"))
             ts = s.get("tree_size", 0)
             if ts <= len(leaves) and mth(leaves[:ts]) != s.get("root_hash"):
@@ -454,23 +621,35 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None):
 def main(argv):
     # --sth-key <pem>: kulcs-szerep szetvalasztas (0.4) - az STH-kat ezzel
     # (es CSAK ezzel) verifikaljuk, a receipteket tovabbra is a fo kulccsal.
-    # Tukor a JS verifier --sth-key kapcsolojahoz.
+    # --trust-root / --successions / --log-id (0.5): kulcs-utodlas, tukor a JS
+    # verifier kapcsoloihoz.
     sth_key_path = None
+    trust_root_path = None
+    successions_path = None
+    log_id = None
     args = []
     i = 1
     while i < len(argv):
-        if argv[i] == "--sth-key":
+        if argv[i] in ("--sth-key", "--trust-root", "--successions", "--log-id"):
             if i + 1 >= len(argv):
-                sys.stderr.write("HIBA: --sth-key utan hianyzik a kulcsfajl\n")
+                sys.stderr.write("HIBA: %s utan hianyzik az ertek\n" % argv[i])
                 return 2
-            sth_key_path = argv[i + 1]
+            if argv[i] == "--sth-key":
+                sth_key_path = argv[i + 1]
+            elif argv[i] == "--trust-root":
+                trust_root_path = argv[i + 1]
+            elif argv[i] == "--successions":
+                successions_path = argv[i + 1]
+            else:
+                log_id = argv[i + 1]
             i += 2
         else:
             args.append(argv[i])
             i += 1
     if len(args) < 2:
         sys.stderr.write("Hasznalat: python3 axr_verify.py <receipts.jsonl> <public-key.pem> "
-                         "[sth.jsonl] [anchors.jsonl] [--sth-key sth-public.pem]\n")
+                         "[sth.jsonl] [anchors.jsonl] [--sth-key sth-public.pem]\n"
+                         "           [--trust-root tr.json] [--successions s.jsonl] [--log-id id]\n")
         return 2
     receipts = read_jsonl(args[0])
     with open(args[1], "r", encoding="utf-8") as f:
@@ -482,8 +661,14 @@ def main(argv):
     sths = read_jsonl(args[2]) if len(args) > 2 else []
     anchors = read_jsonl(args[3]) if len(args) > 3 else []
     sths = [r for r in sths if r.get("record_type") == "sth"]
+    trust_root = None
+    if trust_root_path is not None:
+        with open(trust_root_path, "r", encoding="utf-8") as f:
+            trust_root = json.load(f)
+    successions = read_jsonl(successions_path) if successions_path else None
 
-    problems, stats = verify(receipts, sths, anchors, pub_raw, sth_pub_raw)
+    problems, stats = verify(receipts, sths, anchors, pub_raw, sth_pub_raw,
+                             trust_root=trust_root, successions=successions, log_id=log_id)
     print("-" * 72)
     print("Python verifier (cross-impl mag)")
     print("Receiptek: %d  (%d workflow, %d lepes)  |  %d STH, %d horgonyzott"

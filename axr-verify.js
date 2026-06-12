@@ -24,6 +24,16 @@
 //   14. side-effect attestation (0.4, N1): a side_effects bejegyzesek jol-formaltak,
 //       a provider-attestation (ha van) alairasa verifikal; attestation nelkul recheckable
 //
+// Ellenoriz (0.5 - uj):
+//   15. kulcs-utodlas (key succession): ha a --trust-root kibovitett (genesis-
+//       tartalmu) es van succession-forras (--successions es/vagy az STH-kba
+//       agyazott embedded_succession), a verifier kulcs-idovonalat epit, es
+//       MINDEN alairast a megfelelo korszak kulcsaval ellenoriz: a receipteket
+//       a levelpoziciojuk (leaf_index+1), az STH-kat a tree_size szerint ervenyes
+//       kulccsal. Igy a rotacion ativelo log egyben verifikalhato. Minden
+//       succession ELOBB a root-kulccsal verifikalodik. Trust-root vagy genesis
+//       nelkul minden a regi (egykulcsos / --sth-key) uton fut.
+//
 // VERZIO-KEZELES:
 //   A verifier a receipt sajat axr_version mezoje szerint agazik el. A regi 0.1/0.2
 //   lancok TOVABBRA IS ERVENYESEK - az alairas es a hash-lanc verziotol fuggetlen.
@@ -38,6 +48,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const https = require('https');
 const core = require('./axr-core');
+const succ = require('./axr-succession');
 
 // Hasznalat:
 //   node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]
@@ -62,13 +73,16 @@ const core = require('./axr-core');
 //                       'ots' CLI-re marad - lasd README)
 function parseArgs(argv) {
   const positional = [];
-  const flags = { strict: false, online: false, sthKey: null, trustRoot: null };
+  const flags = { strict: false, online: false, sthKey: null, trustRoot: null,
+                  successions: null, logId: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--strict') flags.strict = true;
     else if (a === '--online') flags.online = true;
     else if (a === '--sth-key') flags.sthKey = argv[++i];
     else if (a === '--trust-root') flags.trustRoot = argv[++i];
+    else if (a === '--successions') flags.successions = argv[++i];
+    else if (a === '--log-id') flags.logId = argv[++i];
     else if (a.startsWith('--')) { console.error('ismeretlen kapcsolo: ' + a); process.exit(2); }
     else positional.push(a);
   }
@@ -78,7 +92,8 @@ const { positional: _pos, flags: ARGS } = parseArgs(process.argv.slice(2));
 const [logPath, keyPath, sthPath, anchorPath] = _pos;
 if (!logPath || !keyPath) {
   console.error('Hasznalat: node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]\n' +
-    '            [--strict] [--sth-key <pem>] [--trust-root <json>] [--online]');
+    '            [--strict] [--sth-key <pem>] [--trust-root <json>] [--online]\n' +
+    '            [--successions <jsonl>] [--log-id <id>]');
   process.exit(2);
 }
 
@@ -142,6 +157,23 @@ if (ARGS.trustRoot) {
     process.exit(2);
   }
 }
+
+// Kulso succession-rekordok (0.5): root-alairt key_succession-ok JSONL-ben.
+// Csak trust-root mellett ertelmesek - a root-kulcs nelkul nem verifikalhatok.
+let successionRecords = [];
+if (ARGS.successions) {
+  try {
+    successionRecords = fs.readFileSync(ARGS.successions, 'utf8')
+      .trim().split('\n').filter(Boolean).map(JSON.parse);
+  } catch (e) {
+    console.error('HIBA: a --successions nem olvashato/ervenytelen: ' + e.message);
+    process.exit(2);
+  }
+  if (!trustRoot) {
+    console.error('HIBA: a --successions csak --trust-root mellett hasznalhato (a root-kulcs verifikalja oket)');
+    process.exit(2);
+  }
+}
 let lines;
 try {
   lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
@@ -179,16 +211,15 @@ function versionAtLeast(v, min) {
   return true;
 }
 
-// ── 1. Parse + alairas-ellenorzes ──────────────────────────────────────────────
+// ── 1. Parse ───────────────────────────────────────────────────────────────────
+// Az alairas-ellenorzes NEM itt fut, hanem a kulcs-idovonal felepitese UTAN
+// (lasd 15. ellenorzes): rotacion ativelo lognal a "melyik kulcs ervenyes ehhez
+// a receipthez" a levelpozicio fuggvenye, amihez elobb a teljes log kell.
 const receipts = [];
 for (let i = 0; i < lines.length; i++) {
   let r;
   try { r = JSON.parse(lines[i]); }
   catch (e) { problem(`${i+1}. sor: ervenytelen JSON`); continue; }
-  if (!verifySignature(r, publicKey)) {
-    problem(`${r.receipt_type || '?'} ${r.receipt_id || '(nincs id)'}: ERVENYTELEN ALAIRAS ` +
-            `- a receipt tartalma megvaltozott az alairas ota, vagy mas kulccsal keszult`);
-  }
   receipts.push(r);
 }
 
@@ -395,11 +426,95 @@ const leafHashes = leafReceipts.map(core.leafHash);
 const sthByRootSize = {};
 for (const sth of sths) sthByRootSize[`${sth.root_hash}|${sth.tree_size}`] = sth;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 15. KULCS-UTODLAS (0.5) - idovonalak epitese, majd alairas-ellenorzes
+// ═══════════════════════════════════════════════════════════════════════════════
+// Egyetlen ora a tree_size: az STH-t a tree_size-anal, a receiptet a level-
+// poziciojanal (leaf_index+1) ervenyes kulcs irja ala - a hatar-szabaly igy
+// byte-ra ugyanaz, mint a monitornal (utod: pozicio >= effective_from).
+// SORREND-INVARIANS: minden succession ELOBB root-verifikalt, es csak utana
+// szamit barmely kulcsa az alairas-ellenorzesben.
+
+// A log_id felodasa: explicit flag > az elso STH-bol > az egyetlen trust-root
+// log bejegyzes. Enelkul nincs genesis-lookup -> regi (egykulcsos) ut.
+const effLogId = ARGS.logId || (sths[0] && sths[0].log_id) ||
+  (trustRoot && Array.isArray(trustRoot.logs) && trustRoot.logs.length === 1
+    ? trustRoot.logs[0].log_id : null);
+
+function buildTimelineForRole(role) {
+  if (!trustRoot || !Array.isArray(trustRoot.logs)) return null;
+  if (!effLogId) {
+    notice(`kulcs-idovonal (${role}): a log_id nem allapithato meg (--log-id?) - a regi egykulcsos ut fut`);
+    return null;
+  }
+  const genesisPem = succ.genesisKey(trustRoot, effLogId, role);
+  if (!genesisPem) return null; // nincs genesis ehhez a role-hoz -> regi ut
+  const pool = [];
+  const seen = new Set();
+  const add = (rec, src) => {
+    if (!rec || rec.record_type !== 'key_succession' || rec.role !== role) return;
+    const h = sha256(rec);
+    if (seen.has(h)) return;
+    seen.add(h);
+    const v = succ.verifyKeySuccession(rec, trustRoot.root_public_key);
+    if (!v.ok) {
+      problem(`${src}: a key_succession NEM verifikal a root-kulcsra: ${v.problems.join('; ')}`);
+      return;
+    }
+    if (rec.log_id !== effLogId) {
+      problem(`${src}: a key_succession idegen loghoz tartozik (${rec.log_id} != ${effLogId})`);
+      return;
+    }
+    pool.push(rec);
+  };
+  successionRecords.forEach((rec, i) => add(rec, `successions[${i + 1}. sor]`));
+  if (role === 'sth')
+    for (const sth of sths)
+      if (sth.embedded_succession) add(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
+  const tl = succ.buildKeyTimeline(genesisPem, pool, role, trustRoot.root_public_key);
+  for (const p of tl.problems) notice(`kulcs-idovonal (${role}): ${p}`);
+  // elore letrehozott kulcs-objektumok (ne minden receiptnel parse-oljunk PEM-et)
+  for (const e of tl.timeline) e.keyObj = crypto.createPublicKey(e.pem);
+  return tl.timeline;
+}
+
+const receiptTimeline = buildTimelineForRole('receipt');
+const sthTimeline = buildTimelineForRole('sth');
+
+// ── 1. Alairas-ellenorzes (idovonallal, ha van; kulonben a regi egykulcsos ut) ──
+{
+  const leafPos = new Map(); // receipt -> 1-alapu levelpozicio
+  leafReceipts.forEach((r, i) => leafPos.set(r, i + 1));
+  for (const r of receipts) {
+    let key = publicKey;
+    if (receiptTimeline && leafPos.has(r)) {
+      const e = succ.keyAtTreeSize(receiptTimeline, leafPos.get(r));
+      if (!e.authorized)
+        problem(`receipt ${r.receipt_id || '(nincs id)'} (pozicio ${leafPos.get(r)}): KEY_CHANGED_UNAUTHORIZED ` +
+                `- a(z) ${e.fingerprint.slice(0, 20)}... kulcs valtasa NEM root-autorizalt`);
+      key = e.keyObj;
+    }
+    if (!verifySignature(r, key)) {
+      problem(`${r.receipt_type || '?'} ${r.receipt_id || '(nincs id)'}: ERVENYTELEN ALAIRAS ` +
+              `- a receipt tartalma megvaltozott az alairas ota, vagy mas kulccsal keszult`);
+    }
+  }
+}
+
 // ── 11. STH-lanc + consistency proof ───────────────────────────────────────────
 if (sths.length) {
   for (const sth of sths) {
-    if (!verifySignature(sth, sthPublicKey))
-      problem(`STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS`);
+    let sthKeyForThis = sthPublicKey, sthKeyNote = '';
+    if (sthTimeline) {
+      const e = succ.keyAtTreeSize(sthTimeline, sth.tree_size);
+      if (!e.authorized)
+        problem(`STH (tree_size=${sth.tree_size}): KEY_CHANGED_UNAUTHORIZED - a(z) ` +
+                `${e.fingerprint.slice(0, 20)}... kulcs valtasa NEM root-autorizalt`);
+      sthKeyForThis = e.keyObj;
+      sthKeyNote = ' (idovonal szerinti kulcs)';
+    }
+    if (!verifySignature(sth, sthKeyForThis))
+      problem(`STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS${sthKeyNote}`);
     const recomputed = core.merkleRootFromLeaves(leafHashes.slice(0, sth.tree_size));
     if (sth.tree_size <= leafHashes.length && recomputed !== sth.root_hash)
       problem(`STH (tree_size=${sth.tree_size}): root_hash nem egyezik az elso ${sth.tree_size} level Merkle-gyokerevel`);
@@ -531,6 +646,10 @@ async function finalize() {
     .map(v => `${v}: ${versionCounts[v]}`).join(', ');
   console.log(`Verziok:    ${verStr}`);
   if (ARGS.sthKey) console.log(`STH-kulcs:  kulon (--sth-key) - kulcs-szerep szetvalasztva`);
+  if (receiptTimeline || sthTimeline) {
+    const seg = (tl) => tl ? `${tl.length} szegmens` : 'egykulcsos';
+    console.log(`Kulcs-utodlas: receipt-idovonal ${seg(receiptTimeline)}, sth-idovonal ${seg(sthTimeline)} (root-horgonyzott, log: ${effLogId})`);
+  }
   if (trustRoot) {
     const np = (trustRoot.providers || []).length;
     console.log(`Trust-root: ervenyes, ${np} provider - a side-effect attestation ehhez kotve`);
