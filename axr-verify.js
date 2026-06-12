@@ -145,20 +145,23 @@ if (ARGS.sthKey) {
 // attestation ezutan ehhez kotodik (core.verifySideEffect masodik parametere).
 let trustRoot = null;
 if (ARGS.trustRoot) {
+  // 0.6: a --trust-root lehet egyetlen rekord (0.5), kvorum-modu root vagy
+  // teljes rotacios LANC (genesis + utod-rootok, JSONL/tomb). A lanc fejet
+  // a fajl birtokosa pinneli; minden utodot az elod kvoruma autorizal; az
+  // effektiv root (kulcsok, genesisek, providerek) a lanc utolso eleme.
+  let trRecords;
   try {
-    trustRoot = JSON.parse(fs.readFileSync(ARGS.trustRoot, 'utf8'));
+    trRecords = succ.parseTrustRootInput(fs.readFileSync(ARGS.trustRoot, 'utf8'));
   } catch (e) {
     console.error('HIBA: a --trust-root nem olvashato/ervenytelen JSON: ' + e.message);
     process.exit(2);
   }
-  // 0.6: a succession-modul verifyTrustRoot-ja az egykulcsos ES a kvorum-modu
-  // (root_keys + threshold, M-of-N multi-alairas) trust rootot is kezeli; az
-  // egykulcsos eset viselkedese a core-eval azonos.
-  const trChk = succ.verifyTrustRoot(trustRoot);
+  const trChk = succ.verifyTrustRootChain(trRecords);
   if (!trChk.ok) {
-    console.error('HIBA: a --trust-root nem verifikal (a root-kulcsokkal): ' + trChk.problems.join('; '));
+    console.error('HIBA: a --trust-root (lanc) nem verifikal: ' + trChk.problems.join('; '));
     process.exit(2);
   }
+  trustRoot = trChk.effective;
 }
 
 // Kulso succession-rekordok (0.5): root-alairt key_succession-ok JSONL-ben.

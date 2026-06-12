@@ -466,6 +466,43 @@ def verify_key_succession(s, root_anchor):
                           canonicalize(body).encode("utf-8"), root_raw)
 
 
+def parse_trust_root_input(text):
+    # Egyetlen rekord, rekord-tomb vagy JSONL -> rekordlista (tukor a JS
+    # parseTrustRootInput-hoz).
+    t = str(text).strip()
+    try:
+        v = json.loads(t)
+        return v if isinstance(v, list) else [v]
+    except ValueError:
+        return [json.loads(l) for l in t.splitlines() if l.strip()]
+
+
+def verify_trust_root_chain(records):
+    # Trust-root lanc: a fej onmagaban ervenyes genesis; minden utodot az
+    # ELOD kvoruma autorizal (predecessor_trust_root_hash lancolassal).
+    # -> az effektiv (utolso) rekord, vagy None ha barmi torik (fail-closed).
+    if not isinstance(records, list) or not records:
+        return None
+    head = records[0]
+    if not verify_trust_root(head):
+        return None
+    if head.get("predecessor_trust_root_hash"):
+        return None  # a fej nem genesis
+    prev = head
+    for cur in records[1:]:
+        if not isinstance(cur, dict) or cur.get("record_type") != "trust_root":
+            return None
+        if cur.get("predecessor_trust_root_hash") != sha256_str(prev):
+            return None
+        mode = trust_root_mode(prev)
+        if mode is None or not verify_quorum_signed(cur, mode[1], mode[2]):
+            return None
+        if trust_root_mode(cur) is None:
+            return None
+        prev = cur
+    return records[-1]
+
+
 def genesis_key(tr, log_id, role):
     for l in tr.get("logs") or []:
         if isinstance(l, dict) and l.get("log_id") == log_id:
@@ -550,9 +587,14 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
     # a hatar-szabaly a JS-sel byte-azonos (receipt: levelpozicio, STH: tree_size).
     receipt_tl = sth_tl = None
     if trust_root is not None:
-        if not verify_trust_root(trust_root):
-            P("a trust-root NEM verifikal (a sajat root-kulcsaval/kvorumaval)")
+        # 0.6: a trust_root lehet rekordlista (lanc) is - az effektiv root a
+        # lanc-verifikacio eredmenye; egyrekordos bemenetre a regi viselkedes
+        records = trust_root if isinstance(trust_root, list) else [trust_root]
+        effective = verify_trust_root_chain(records)
+        if effective is None:
+            P("a trust-root (lanc) NEM verifikal")
         else:
+            trust_root = effective
             eff_log = log_id or (sths[0].get("log_id") if sths else None)
             if not eff_log and len(trust_root.get("logs") or []) == 1:
                 eff_log = trust_root["logs"][0].get("log_id")
@@ -729,8 +771,9 @@ def main(argv):
     sths = [r for r in sths if r.get("record_type") == "sth"]
     trust_root = None
     if trust_root_path is not None:
+        # 0.6: a fajl lehet egyetlen rekord, tomb vagy JSONL-lanc
         with open(trust_root_path, "r", encoding="utf-8") as f:
-            trust_root = json.load(f)
+            trust_root = parse_trust_root_input(f.read())
     successions = read_jsonl(successions_path) if successions_path else None
 
     problems, stats = verify(receipts, sths, anchors, pub_raw, sth_pub_raw,

@@ -226,6 +226,81 @@ function verifyTrustRoot(trustRoot) {
   return { ok: problems.length === 0, problems };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.6 - Root-rotacio / recovery (trust-root lanc)
+// ═══════════════════════════════════════════════════════════════════════════════
+// A root-keszlet maga is rotalhato: egy UTOD trust-rootot az ELOD deklaralt
+// kulcskeszletenek M-of-N kvoruma ir ala, es predecessor_trust_root_hash
+// lancolja az elodhoz. A fogyasztok a pinned lanc-fejtol (genesis) kovetik a
+// lancot; az "effektiv" root a lanc utolso eleme. Recovery: amig M alairo
+// megvan az N-bol, a kvorum uj keszletet autorizal - in-protocol. Ha M-nel
+// kevesebb maradt: out-of-band uj trust root (kimondva, mint eddig).
+//
+// Egy 0.5-os egykulcsos root is rotalhat kvorum-utodra (migracio): az elod
+// modja szerint verifikalunk (single = 1-of-1 kvorum). Az utod-rekord NEM
+// ervenyes onmagaban (a sajat kulcsai nem irtak ala) - CSAK lancban, a pinned
+// fejtol levezetve. Ez szandekos: nincs onmagat autorizalo root.
+
+// Utod trust-root epitese: az uj body-t (uj kulcskeszlet/genesisek) az ELOD
+// alairoinak reszalairasai fedik. opts mint buildTrustRootBody +
+// opcionalisan root_public_key (single-modu utodhoz).
+function buildTrustRootSuccessor(opts, predecessor, oldSignerPrivPems, now) {
+  const body = buildTrustRootBody(opts, now);
+  if (!body.root_keys) {
+    if (!opts.root_public_key) throw new Error('buildTrustRootSuccessor: root_keys+threshold VAGY root_public_key kell');
+    body.root_public_key = opts.root_public_key;
+  }
+  body.predecessor_trust_root_hash = core.sha256(predecessor);
+  const parts = (oldSignerPrivPems || []).map(p => signQuorumPart(body, p));
+  return assembleQuorum(body, parts);
+}
+
+// Trust-root lanc ellenorzese. records: a pinned genesis-tol az aktualisig.
+// -> { ok, problems, effective } - az effective a lanc utolso eleme (csak ok
+// eseten). Fail-closed: barmely lancszem-hiba a teljes lancot erventeleniti.
+function verifyTrustRootChain(records) {
+  const problems = [];
+  if (!Array.isArray(records) || !records.length)
+    return { ok: false, problems: ['ures trust-root lanc'], effective: null };
+  // 1. a lanc feje: onmagaban ervenyes (pinned) genesis
+  const head = records[0];
+  const headChk = verifyTrustRoot(head);
+  if (!headChk.ok)
+    return { ok: false, problems: ['a lanc-fej (pinned genesis) ervenytelen: ' + headChk.problems.join('; ')], effective: null };
+  if (head.predecessor_trust_root_hash)
+    problems.push('a lanc-fej predecessor_trust_root_hash-t hordoz - nem genesis');
+  // 2. minden utod: elod-hash lancolas + az ELOD kvoruma autorizal
+  for (let i = 1; i < records.length; i++) {
+    const prev = records[i - 1], cur = records[i];
+    if (!cur || cur.record_type !== 'trust_root') { problems.push('a(z) ' + i + '. lancszem nem trust_root'); continue; }
+    if (cur.predecessor_trust_root_hash !== core.sha256(prev))
+      problems.push('lanc-tores a(z) ' + i + '. elemnel: predecessor_trust_root_hash nem az elozo rekordra mutat');
+    const pm = trustRootMode(prev);
+    const q = verifyQuorumSigned(cur, pm.keys, pm.threshold);
+    if (!q.ok)
+      problems.push('a(z) ' + i + '. utod-root NEM az elod kvorumaval alairt: ' + q.problems.join('; '));
+    const cm = trustRootMode(cur);
+    if (cm.mode === 'invalid')
+      problems.push('a(z) ' + i + '. utod-root sajat kulcs-deklaracioja ervenytelen: ' + cm.problems.join('; '));
+  }
+  return { ok: problems.length === 0, problems, effective: problems.length === 0 ? records[records.length - 1] : null };
+}
+
+// Trust-root bemenet normalizalasa: egyetlen rekord, rekord-tomb vagy JSONL
+// szoveg -> rekordlista. A fogyasztok (monitor, verifierek) ezt hasznaljak,
+// igy a --trust-root fajl maradhat egyrekordos (0.5) vagy lehet lanc (0.6).
+function parseTrustRootInput(input) {
+  if (Array.isArray(input)) return input;
+  if (input && typeof input === 'object') return [input];
+  const text = String(input).trim();
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch (e) {
+    return text.split('\n').filter(Boolean).map(l => JSON.parse(l));
+  }
+}
+
 // A genesis-kulcs kinyerese egy (mar verifikalt) trust-rootbol.
 function genesisKey(trustRoot, logId, role) {
   if (!trustRoot || !Array.isArray(trustRoot.logs)) return null;
@@ -416,7 +491,10 @@ module.exports = {
   buildTrustRoot,
   buildTrustRootBody,
   buildQuorumTrustRoot,
+  buildTrustRootSuccessor,
   verifyTrustRoot,
+  verifyTrustRootChain,
+  parseTrustRootInput,
   trustRootMode,
   signQuorumPart,
   assembleQuorum,

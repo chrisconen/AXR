@@ -102,8 +102,12 @@ function pollMonitor(opts) {
   const statePath = opts.statePath || sibling(opts.sthPath, 'monitor-state.json');
   const now = opts.now || (() => new Date().toISOString());
   const fp = keyFingerprint(opts.publicKeyPem);
-  const trustRoot = opts.trustRoot ||
-    (opts.trustRootPath ? JSON.parse(fs.readFileSync(opts.trustRootPath, 'utf8')) : null);
+  // 0.6: a --trust-root lehet egyetlen rekord (0.5) VAGY lanc (genesis +
+  // utod-rootok, JSONL/tomb). A lanc-feloldas a 3/b blokkban tortenik; itt
+  // csak normalizalunk rekordlistava.
+  const trustRootRecords = (opts.trustRoot || opts.trustRootPath)
+    ? succ.parseTrustRootInput(opts.trustRoot || fs.readFileSync(opts.trustRootPath, 'utf8'))
+    : null;
 
   const violations = [];
   const notices = [];
@@ -119,7 +123,7 @@ function pollMonitor(opts) {
     state = { axr_monitor_version: MONITOR_VERSION, log_id: opts.logId || null,
               public_key_fingerprint: fp, witnessed: [] };
   } else {
-    if (!trustRoot && state.public_key_fingerprint !== fp)
+    if (!trustRootRecords && state.public_key_fingerprint !== fp)
       V('KEY_CHANGED', `a rogzitett operator-kulcs megvaltozott (journal: ${state.public_key_fingerprint.slice(0, 20)}..., most: ${fp.slice(0, 20)}...)`);
     if (opts.logId && state.log_id && state.log_id !== opts.logId)
       V('LOG_ID_CHANGED', `a log_id megvaltozott (journal: ${state.log_id}, most: ${opts.logId})`);
@@ -154,15 +158,29 @@ function pollMonitor(opts) {
   // az STH-alairast SOSEM ellenorizzuk olyan kulccsal, amit nem a root autorizalt.
   const currentMax = sths[sths.length - 1].tree_size;
   let timeline = null;
-  if (trustRoot) {
-    const tv = succ.verifyTrustRoot(trustRoot);
-    if (!tv.ok) {
-      // fail-closed: ervenytelen trust-root mellett semmilyen kulcs-allitast
-      // nem fogadunk el - a poll itt veget er, sertessel
-      V('TRUST_ROOT_INVALID', 'a trust-root NEM verifikal: ' + tv.problems.join('; '));
+  if (trustRootRecords) {
+    // 0.6: lanc-feloldas - a fej onmagaban ervenyes genesis, minden utodot az
+    // ELOD kvoruma autorizal; az effektiv root a lanc vege. Egyrekordos
+    // bemenetre ez pontosan a 0.5-os verifyTrustRoot viselkedes.
+    const cv = succ.verifyTrustRootChain(trustRootRecords);
+    if (!cv.ok) {
+      // fail-closed: ervenytelen trust-root/lanc mellett semmilyen
+      // kulcs-allitast nem fogadunk el - a poll itt veget er, sertessel
+      V('TRUST_ROOT_INVALID', 'a trust-root (lanc) NEM verifikal: ' + cv.problems.join('; '));
       saveState(statePath, state);
       return finalize(state, violations, notices);
     }
+    // genesis-pin: a journal az ELSO latott lanc-fejet rogziti. Egy tamado
+    // sajat, onmagaban konzisztens lancot is gyarthatna - a pin ezt fogja el:
+    // mas genesis = TRUST_ROOT_CHANGED, fail-closed.
+    const genesisHash = axr.sha256(trustRootRecords[0]);
+    if (state.trust_root_genesis_hash && state.trust_root_genesis_hash !== genesisHash) {
+      V('TRUST_ROOT_CHANGED', `a pinned genesis trust root MEGVALTOZOTT (journal: ${state.trust_root_genesis_hash.slice(0, 20)}..., most: ${genesisHash.slice(0, 20)}...) - lanc-csere kiserlet`);
+      saveState(statePath, state);
+      return finalize(state, violations, notices);
+    }
+    state.trust_root_genesis_hash = genesisHash;
+    const trustRoot = cv.effective;
     const effLogId = state.log_id || opts.logId || null;
     const genesisPem = succ.genesisKey(trustRoot, effLogId, 'sth');
     // succession-pool: a beagyazottak + a kulso forrasok, dedup, root-verify
