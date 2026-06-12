@@ -37,6 +37,15 @@ const https = require('https');
 const crypto = require('crypto');
 const axr = require('./axr-core');
 const succession = require('./axr-succession');
+const control = require('./axr-control');
+
+// A control-trust-root horgony betoltese fajlbol (PEM, egy rekord, vagy lanc).
+// A control.resolveAnchor a tipust feloldja; itt csak beolvasunk + parse-olunk.
+function succession_control_loadAnchor(p) {
+  const raw = fs.readFileSync(p, 'utf8');
+  if (raw.trimStart().startsWith('-----BEGIN')) return raw;
+  return succession.parseTrustRootInput(raw);
+}
 
 const LEAF_TYPES = ['step', 'workflow', 'identity'];
 
@@ -174,6 +183,12 @@ async function submitBackend(name, rootHash, treeSize, now, opts) {
 //                               az utod kulcs ELSO STH-jaba agyazodik be
 //                               (embedded_succession, 0.5). Nelkule az STH a
 //                               mai (0.3) formaban keszul - nulla valtozas.
+//   controlPath   (opc., 0.7) - control.jsonl (governance-rekordok). Ha adott,
+//                               az STH commitol ra (control_root_hash +
+//                               control_size). controlTrustRoot(Path) kotelezo:
+//                               a sidecar commit elott teljes kripto-verifyt fut.
+//   controlTrustRoot / controlTrustRootPath (opc., 0.7) - a control-rekordok
+//                               root-horgonya (PEM | trust-root | lanc).
 async function runAnchor(opts) {
   if (!opts.receiptsPath) throw new Error('receiptsPath kotelezo');
   if (!opts.privateKeyPem) throw new Error('privateKeyPem kotelezo');
@@ -245,12 +260,36 @@ async function runAnchor(opts) {
     if (!already) embedSuccession = sc;
   }
 
+  // 1/c. Control-log commitment (0.7): ha a hivo atad egy controlPath-t, az STH
+  // body-ja commitol a governance-keszletre (control_root_hash + control_size).
+  // Meridian-kikotes: commit ELOTT MINDEN control-rekord teljes kripto-verifyt
+  // kap (root/kvorum-alairas, log_id, tipus-allowlist) - ervenytelen
+  // governance-anyag NEM anchorolhato (kulonben minden fogyasztot fail-closed
+  // allapotba kenyszeritene: DoS/self-lockout). Ehhez controlTrustRoot is kell.
+  // controlPath nelkul az STH valtozatlan (0.3/0.5) - nulla regresszio.
+  let controlCommit = null;
+  if (opts.controlPath) {
+    const controlRecords = readJsonl(opts.controlPath);
+    if (!opts.controlTrustRoot && !opts.controlTrustRootPath)
+      throw new Error('control: a controlPath mellett controlTrustRoot(Path) kotelezo (commit elotti verify-hoz)');
+    const controlAnchor = opts.controlTrustRoot ||
+      succession_control_loadAnchor(opts.controlTrustRootPath);
+    const chk = control.verifyControlLog(controlRecords, controlAnchor, logId);
+    if (!chk.ok)
+      throw new Error('control: a control log NEM verifikal (ervenytelen governance-anyag nem anchorolhato):\n  ' + chk.problems.join('\n  '));
+    controlCommit = { control_root_hash: control.controlRoot(controlRecords), control_size: controlRecords.length };
+  }
+
   const sthBody = {
-    axr_version: embedSuccession ? '0.5' : '0.3', record_type: 'sth', log_id: logId,
+    axr_version: (embedSuccession || controlCommit) ? '0.5' : '0.3', record_type: 'sth', log_id: logId,
     tree_size: leaves.length, root_hash: rootHash, timestamp: now(),
     previous_sth_hash: lastSth ? axr.chainHash(lastSth) : null
   };
   if (embedSuccession) sthBody.embedded_succession = embedSuccession;
+  if (controlCommit) {
+    sthBody.control_root_hash = controlCommit.control_root_hash;
+    sthBody.control_size = controlCommit.control_size;
+  }
   sthBody.signature = axr.signReceipt(sthBody, opts.privateKeyPem);
   appendJsonl(sthPath, [sthBody]);
   // a frissitett inkrementalis allapot perzisztalasa (atomian)
@@ -392,7 +431,8 @@ if (require.main === module) {
   if (!receiptsPath || !keyPath) {
     console.error('Hasznalat: node axr-anchor.js <receipts.jsonl> <sth-private-key.pem> ' +
       '[--sth sth.jsonl] [--anchors anchors.jsonl] [--backend local|opentimestamps] [--log-id axr:agent:v1] ' +
-      '[--succession key-succession.json]\n' +
+      '[--succession key-succession.json] ' +
+      '[--control control.jsonl --control-trust-root trust-root.json]\n' +
       '       node axr-anchor.js upgrade <anchors.jsonl>');
     process.exit(2);
   }
@@ -402,7 +442,9 @@ if (require.main === module) {
     sthPath: flags.sth, anchorsPath: flags.anchors,
     backends: flags.backend ? [flags.backend] : ['local'],
     logId: flags['log-id'],
-    succession: flags.succession ? JSON.parse(fs.readFileSync(flags.succession, 'utf8')) : undefined
+    succession: flags.succession ? JSON.parse(fs.readFileSync(flags.succession, 'utf8')) : undefined,
+    controlPath: flags.control,
+    controlTrustRootPath: flags['control-trust-root']
   }).then(res => {
     if (!res.created) {
       console.log(`Nincs teendo: ${res.reason} (fa-meret ${res.treeSize}, lefedve ${res.coveredSize}).`);
