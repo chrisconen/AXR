@@ -72,10 +72,33 @@ KÉSZ (2026-06-12, folytatás):
 8. `axr-webhook.js` — generikus best-effort kézbesítés (monitor `--webhook`);
    token fájl/env-ből; a detekció eredményét sosem befolyásolja
 
-HÁTRA:
-- Halasztva 0.6+-ra (specben kimondva): revokáció, threshold-aláírás,
-  recovery-ceremónia, wall-clock ablakok.
-- README frissítés 0.5-re (key succession + OCSF/webhook szekciók).
+## Aktív munka: 0.6 root-lifecycle hardening
+
+Scope DÖNTÖTT (AXR-0.6-SCOPE.md, 2026-06-12, Chris delegálta a CTO-nak).
+Sorrend: P1 → P3 → P2, a CLI minden inkrementummal együtt landol.
+
+1. **P1 kvórum-root:** trust root `root_keys: [pem...]` + `threshold: M`;
+   M különböző deklarált kulcs aláírása ugyanazon kanonikus body felett
+   (`signatures: [{key_fingerprint, signature}]`, fingerprint szerint
+   rendezve, a signed body a signatures/signature mező NÉLKÜL). Fail-closed:
+   duplikált/nem-deklarált aláíró, M-1, eltérő body → elutasítás. M=1/N=1 =
+   a mai egykulcsos eset (backward-kompat). NEM "threshold-kripto" — a spec
+   kimondja a maradék failure mode-okat (quorum collusion, kolokáció).
+2. **P3 root-rotáció/recovery:** új trust rootot a RÉGI készlet kvóruma ír
+   alá, `predecessor_trust_root_hash` láncolás; a fogyasztók a pinned régi
+   roottól láncot követve fogadják el.
+3. **P2 revokáció:** kvórum-aláírt `key_revocation` {log_id, role,
+   revoked_fingerprint, revoked_at_tree_size, reason}. 3-szintű szabály:
+   anchorolt pre-boundary elfogad; bizonyíték nélküli pre-boundary
+   fail-closed; utána KEY_REVOKED.
+4. **CLI:** `sign` / `assemble` / `revoke` az axr-key-succession-ben,
+   önellenőrzéssel.
+5. Spec: AXR-SPEC-0.6.md kvórum-policy threat-model szekcióval, 2-of-3
+   ajánlással (nem kényszer).
+
+Halasztva 0.7-re: P4 control-log irány (receipt-succession terjesztés az STH
+body-jában commitolt manifesttel), Compliance Report Generator, 0.5 rollout
+tooling (a P1 után indulhat párhuzamosan), wall-clock ablakok (elvetve).
 
 ## Sorvégek — figyelem
 
