@@ -25,10 +25,25 @@
 //   # kulcs-fingerprint kiirasa (a --predecessor-fingerprint elokeszitesehez)
 //   node axr-key-succession.js fingerprint <pub.pem>
 //
+// 0.6 - revokacio es kvorum-ceremonia:
+//   # egykulcsos revokacio (kvorumhoz: body/sign/assemble)
+//   node axr-key-succession.js revoke <root-priv.pem> --log-id ... --role ... \
+//        (--revoked <pub.pem> | --revoked-fingerprint sha256:<hex>) --revoked-at <n>
+//
+//   # tobb-alairos (M-of-N) ceremonia, kulon gepeken:
+//   node axr-key-succession.js body succession|revocation|root-successor ... > body.json
+//   node axr-key-succession.js sign body.json alairo1-priv.pem > part1.json   # alaironkent
+//   node axr-key-succession.js assemble body.json part1.json part2.json \
+//        --verify trust-root.json > record.json
+//
+// A verify mindharom horgonyt fogadja: nyers PEM, trust-root, trust-root LANC -
+// es key_succession ES key_revocation rekordot is ellenoriz.
+//
 // Nulla kulso fuggoseg. Kilepesi kod: 0 ok, 1 ervenytelen, 2 rossz hasznalat.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const fs = require('fs');
+const crypto = require('crypto');
 const succ = require('./axr-succession');
 
 function die(msg, code) { console.error(msg); process.exit(code == null ? 2 : code); }
@@ -88,33 +103,49 @@ if (cmd === 'build') {
   process.exit(0);
 }
 
+// ── kozos: bizalmi horgony betoltese ───────────────────────────────────────────
+// Lehet nyers PEM, egyetlen trust-root, vagy trust-root LANC (0.6). JSON eseten
+// ELOSZOR a rekord/lanc verifikal onmagaban (a fej a pinned genesis), es az
+// EFFEKTIV (utolso) root lesz a horgony - hamis fajlbol nem lesz "sajat root".
+function loadAnchorOrDie(anchorPath) {
+  const raw = readFileOrDie(anchorPath, 'bizalmi horgony (root-pub / trust-root / lanc)');
+  if (raw.trimStart().startsWith('-----BEGIN')) return raw;
+  let records;
+  try { records = succ.parseTrustRootInput(raw); }
+  catch (e) { die('HIBA: a bizalmi horgony se nem PEM, se nem ervenyes JSON: ' + e.message); }
+  const cv = succ.verifyTrustRootChain(records);
+  if (!cv.ok) die('HIBA: a trust-root (lanc) NEM verifikal: ' + cv.problems.join('; '), 1);
+  return cv.effective;
+}
+
 // ── verify ─────────────────────────────────────────────────────────────────────
+// Rekord-tipus szerint agazik: key_succession es key_revocation is ellenorizheto.
 if (cmd === 'verify') {
   const [recordPath, anchorPath] = rest;
   if (!recordPath || !anchorPath)
-    die('Hasznalat: node axr-key-succession.js verify <key-succession.json> <root-pub.pem | trust-root.json>');
+    die('Hasznalat: node axr-key-succession.js verify <rekord.json> <root-pub.pem | trust-root.json | lanc.jsonl>');
 
   let record;
-  try { record = JSON.parse(readFileOrDie(recordPath, 'succession rekord')); }
-  catch (e) { die('HIBA: a succession rekord ervenytelen JSON: ' + e.message); }
+  try { record = JSON.parse(readFileOrDie(recordPath, 'rekord')); }
+  catch (e) { die('HIBA: a rekord ervenytelen JSON: ' + e.message); }
+  const anchor = loadAnchorOrDie(anchorPath);
 
-  // A bizalmi horgony lehet nyers PEM vagy alairt trust-root. Trust-root eseten
-  // ELOSZOR a trust-root verifikal (onmagaval), es csak utana hasznaljuk a
-  // root_public_key-jet - igy nem lehet egy hamis fajllal "sajat rootot" hozni.
-  const anchorRaw = readFileOrDie(anchorPath, 'bizalmi horgony (root-pub / trust-root)');
-  let rootPub;
-  if (anchorRaw.trimStart().startsWith('-----BEGIN')) {
-    rootPub = anchorRaw;
-  } else {
-    let tr;
-    try { tr = JSON.parse(anchorRaw); }
-    catch (e) { die('HIBA: a bizalmi horgony se nem PEM, se nem ervenyes JSON: ' + e.message); }
-    const trChk = succ.verifyTrustRoot(tr);
-    if (!trChk.ok) die('HIBA: a trust-root NEM verifikal: ' + trChk.problems.join('; '), 1);
-    rootPub = tr.root_public_key;
+  if (record.record_type === 'key_revocation') {
+    const res = succ.verifyKeyRevocation(record, anchor);
+    if (res.ok) {
+      console.log('Key revocation ERVENYES (root-alairt).');
+      console.log('  log_id:     ' + record.log_id);
+      console.log('  role:       ' + record.role);
+      console.log('  revoked:    ' + record.revoked_fingerprint);
+      console.log('  revoked_at: tree_size >= ' + record.revoked_at_tree_size);
+      console.log('  reason:     ' + record.reason + '  (issued_at: ' + record.issued_at + ')');
+      process.exit(0);
+    }
+    console.log('Key revocation ERVENYTELEN: ' + res.problems.join('; '));
+    process.exit(1);
   }
 
-  const res = succ.verifyKeySuccession(record, rootPub);
+  const res = succ.verifyKeySuccession(record, anchor);
   if (res.ok) {
     console.log('Key succession ERVENYES (root-alairt).');
     console.log('  log_id:         ' + record.log_id);
@@ -138,4 +169,176 @@ if (cmd === 'fingerprint') {
   process.exit(0);
 }
 
-die('Hasznalat: node axr-key-succession.js <build|verify|fingerprint> ...');
+// ── revoke (egykulcsos build) ──────────────────────────────────────────────────
+// Kvorum-alairt revokaciohoz a body/sign/assemble ceremonia valo.
+if (cmd === 'revoke') {
+  const positional = [];
+  const flags = {};
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+    else positional.push(rest[i]);
+  }
+  const [rootPrivPath] = positional;
+  const usage = 'Hasznalat: node axr-key-succession.js revoke <root-priv.pem> ' +
+    '--log-id <id> --role sth|receipt (--revoked <pub.pem> | --revoked-fingerprint sha256:<hex>) ' +
+    '--revoked-at <tree_size> [--reason szoveg]';
+  if (!rootPrivPath || !flags['log-id'] || !flags.role || !flags['revoked-at']) die(usage);
+  if (!flags.revoked && !flags['revoked-fingerprint']) die(usage);
+  const rootPriv = readFileOrDie(rootPrivPath, 'root privat kulcs');
+  const revokedFp = flags['revoked-fingerprint'] ||
+    succ.keyFingerprint(readFileOrDie(flags.revoked, 'revokalando publikus kulcs'));
+  let record;
+  try {
+    record = succ.buildKeyRevocation({
+      log_id: flags['log-id'], role: flags.role,
+      revoked_fingerprint: revokedFp,
+      revoked_at_tree_size: Number(flags['revoked-at']),
+      reason: flags.reason
+    }, rootPriv);
+  } catch (e) { die('HIBA: ' + e.message); }
+  // onellenorzes kiiras elott
+  const rootPub = crypto.createPublicKey(crypto.createPrivateKey(rootPriv))
+    .export({ type: 'spki', format: 'pem' });
+  const chk = succ.verifyKeyRevocation(record, rootPub);
+  if (!chk.ok) die('HIBA: a felepitett revokacio nem verifikal: ' + chk.problems.join('; '), 1);
+  process.stdout.write(JSON.stringify(record) + '\n');
+  process.exit(0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Kvorum-ceremonia: body -> sign (alaironkent, kulon gepeken) -> assemble
+// ═══════════════════════════════════════════════════════════════════════════════
+// A kezzel gyartott kanonikus JSON es az alairas-fesules garantalt hibaforras
+// (self-lockout) - ezert mindharom lepes parancs, onellenorzessel.
+
+// ── body: alairatlan rekord-torzs eloallitasa ──────────────────────────────────
+if (cmd === 'body') {
+  const kind = rest[0];
+  const positional = [];
+  const flags = {};
+  for (let i = 1; i < rest.length; i++) {
+    if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+    else positional.push(rest[i]);
+  }
+  if (kind === 'succession') {
+    const usage = 'Hasznalat: node axr-key-succession.js body succession --log-id <id> --role sth|receipt ' +
+      '(--predecessor <pub.pem> | --predecessor-fingerprint sha256:<hex>) --successor <pub.pem> ' +
+      '--effective-from <tree_size> [--reason szoveg]';
+    if (!flags['log-id'] || !flags.role || !flags.successor || !flags['effective-from']) die(usage);
+    if (!flags.predecessor && !flags['predecessor-fingerprint']) die(usage);
+    let body;
+    try {
+      body = succ.buildKeySuccessionBody({
+        log_id: flags['log-id'], role: flags.role,
+        predecessor_fingerprint: flags['predecessor-fingerprint'] ||
+          succ.keyFingerprint(readFileOrDie(flags.predecessor, 'predecessor publikus kulcs')),
+        successor_public_key: readFileOrDie(flags.successor, 'successor publikus kulcs'),
+        effective_from_tree_size: Number(flags['effective-from']),
+        reason: flags.reason
+      });
+    } catch (e) { die('HIBA: ' + e.message); }
+    process.stdout.write(JSON.stringify(body) + '\n');
+    process.exit(0);
+  }
+  if (kind === 'revocation') {
+    const usage = 'Hasznalat: node axr-key-succession.js body revocation --log-id <id> --role sth|receipt ' +
+      '(--revoked <pub.pem> | --revoked-fingerprint sha256:<hex>) --revoked-at <tree_size> [--reason szoveg]';
+    if (!flags['log-id'] || !flags.role || !flags['revoked-at']) die(usage);
+    if (!flags.revoked && !flags['revoked-fingerprint']) die(usage);
+    let body;
+    try {
+      body = succ.buildKeyRevocationBody({
+        log_id: flags['log-id'], role: flags.role,
+        revoked_fingerprint: flags['revoked-fingerprint'] ||
+          succ.keyFingerprint(readFileOrDie(flags.revoked, 'revokalando publikus kulcs')),
+        revoked_at_tree_size: Number(flags['revoked-at']),
+        reason: flags.reason
+      });
+    } catch (e) { die('HIBA: ' + e.message); }
+    process.stdout.write(JSON.stringify(body) + '\n');
+    process.exit(0);
+  }
+  if (kind === 'root-successor') {
+    // utod trust-root torzse: az elod fajl lehet rekord vagy lanc (az utolso
+    // elem az elod); a leiro JSON: { providers, logs, root_keys | root_public_key, threshold }
+    const [predPath, descPath] = positional;
+    if (!predPath || !descPath)
+      die('Hasznalat: node axr-key-succession.js body root-successor <elod-tr.json|lanc.jsonl> <leiro.json>');
+    let predRecords, desc;
+    try { predRecords = succ.parseTrustRootInput(readFileOrDie(predPath, 'elod trust-root')); }
+    catch (e) { die('HIBA: az elod trust-root ervenytelen: ' + e.message); }
+    try { desc = JSON.parse(readFileOrDie(descPath, 'leiro JSON')); }
+    catch (e) { die('HIBA: a leiro ervenytelen JSON: ' + e.message); }
+    const predecessor = predRecords[predRecords.length - 1];
+    let body;
+    try {
+      body = succ.buildTrustRootBody(desc);
+      if (!body.root_keys) {
+        if (!desc.root_public_key) die('HIBA: a leiroban root_keys+threshold VAGY root_public_key kell');
+        body.root_public_key = desc.root_public_key;
+      }
+      body.predecessor_trust_root_hash = require('./axr-core').sha256(predecessor);
+    } catch (e) { die('HIBA: ' + e.message); }
+    process.stdout.write(JSON.stringify(body) + '\n');
+    process.exit(0);
+  }
+  die('Hasznalat: node axr-key-succession.js body <succession|revocation|root-successor> ...');
+}
+
+// ── sign: egy alairo reszalairasa egy body folott ──────────────────────────────
+if (cmd === 'sign') {
+  const [bodyPath, privPath] = rest;
+  if (!bodyPath || !privPath)
+    die('Hasznalat: node axr-key-succession.js sign <body.json> <alairo-priv.pem>');
+  let body;
+  try { body = JSON.parse(readFileOrDie(bodyPath, 'body')); }
+  catch (e) { die('HIBA: a body ervenytelen JSON: ' + e.message); }
+  if (body.signature !== undefined || body.signatures !== undefined)
+    die('HIBA: a body mar tartalmaz alairast - a sign alairatlan torzset var');
+  let part;
+  try { part = succ.signQuorumPart(body, readFileOrDie(privPath, 'alairo privat kulcs')); }
+  catch (e) { die('HIBA: ' + e.message); }
+  process.stdout.write(JSON.stringify(part) + '\n');
+  process.exit(0);
+}
+
+// ── assemble: reszalairasok osszefesulese + (opcionalis) kvorum-ellenorzes ─────
+if (cmd === 'assemble') {
+  const positional = [];
+  const flags = {};
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+    else positional.push(rest[i]);
+  }
+  const [bodyPath, ...partPaths] = positional;
+  if (!bodyPath || !partPaths.length)
+    die('Hasznalat: node axr-key-succession.js assemble <body.json> <part1.json> [part2.json ...] [--verify <root-pub.pem|trust-root.json|lanc.jsonl>]');
+  let body;
+  try { body = JSON.parse(readFileOrDie(bodyPath, 'body')); }
+  catch (e) { die('HIBA: a body ervenytelen JSON: ' + e.message); }
+  const parts = partPaths.map(p => {
+    try { return JSON.parse(readFileOrDie(p, 'reszalairas (' + p + ')')); }
+    catch (e) { return die('HIBA: a reszalairas ervenytelen JSON (' + p + '): ' + e.message); }
+  });
+  let record;
+  try { record = succ.assembleQuorum(body, parts); }
+  catch (e) { die('HIBA: ' + e.message); }
+  if (flags.verify) {
+    // a teljes ellenorzes a rekord-tipus szerint - igy az assemble nem ad ki
+    // olyan rekordot, amit a fogyasztok ugyis elutasitananak
+    const anchor = loadAnchorOrDie(flags.verify);
+    const res = record.record_type === 'key_revocation'
+      ? succ.verifyKeyRevocation(record, anchor)
+      : record.record_type === 'key_succession'
+        ? succ.verifyKeySuccession(record, anchor)
+        : { ok: false, problems: ['assemble --verify: ismeretlen record_type: ' + record.record_type] };
+    if (!res.ok) die('HIBA: az osszefesult rekord NEM verifikal: ' + res.problems.join('; '), 1);
+    console.error('assemble: a rekord a megadott horgonnyal ERVENYES (' + record.signatures.length + ' alairas).');
+  } else {
+    console.error('assemble: FIGYELEM - horgony nelkul nem ellenorzott (add meg: --verify <horgony>).');
+  }
+  process.stdout.write(JSON.stringify(record) + '\n');
+  process.exit(0);
+}
+
+die('Hasznalat: node axr-key-succession.js <build|verify|fingerprint|revoke|body|sign|assemble> ...');

@@ -107,7 +107,61 @@ ok(run(['verify', recPath]).code === 2, 'hianyos verify -> exit 2');
 ok(run(['nemletezik']).code === 2, 'ismeretlen parancs -> exit 2');
 
 // ───────────────────────────────────────────────────────────────────────────
-section('6. End-to-end: a CLI-vel epitett rekordot a sidecar beagyazza');
+section('6. (0.6) revoke parancs');
+const revRes = run(['revoke', rootPrivPath, '--log-id', LOG, '--role', 'receipt',
+  '--revoked', aPubPath, '--revoked-at', '7', '--reason', 'compromise']);
+ok(revRes.code === 0, 'revoke: exit 0');
+const revRec = JSON.parse(revRes.out);
+ok(s.verifyKeyRevocation(revRec, root.publicKey).ok && revRec.revoked_at_tree_size === 7,
+  'a revokacio root-alairt es a mezok helyesek');
+const revPath = W('revocation.json', JSON.stringify(revRec) + '\n');
+ok(run(['verify', revPath, rootPubPath]).code === 0, 'verify felismeri es elfogadja a revokaciot');
+const revTampered = W('rev-tampered.json', JSON.stringify({ ...revRec, revoked_at_tree_size: 1 }) + '\n');
+ok(run(['verify', revTampered, rootPubPath]).code === 1, 'hamisitott revokacio -> exit 1');
+
+// ───────────────────────────────────────────────────────────────────────────
+section('7. (0.6) kvorum-ceremonia: body -> sign -> assemble');
+const Q1 = genKey(), Q2 = genKey(), Q3 = genKey();
+const qTr = s.buildQuorumTrustRoot({ providers: [], root_keys: [Q1.publicKey, Q2.publicKey, Q3.publicKey],
+  threshold: 2, logs: [{ log_id: LOG, genesis: { sth: A.publicKey, receipt: null } }] },
+  [Q1.privateKey, Q2.privateKey], T0);
+const qTrPath = W('quorum-tr.json', JSON.stringify(qTr) + '\n');
+const q1Priv = W('q1.pem', Q1.privateKey), q3Priv = W('q3.pem', Q3.privateKey);
+// body
+const bodyRes = run(['body', 'succession', '--log-id', LOG, '--role', 'sth',
+  '--predecessor', aPubPath, '--successor', bPubPath, '--effective-from', '10']);
+ok(bodyRes.code === 0 && !JSON.parse(bodyRes.out).signature, 'body: alairatlan torzs');
+const bodyPath = W('body.json', bodyRes.out);
+// sign x2 (kulon "gepeken")
+const p1 = run(['sign', bodyPath, q1Priv]);
+const p3 = run(['sign', bodyPath, q3Priv]);
+ok(p1.code === 0 && p3.code === 0, 'sign: ket reszalairas keszult');
+const p1Path = W('part1.json', p1.out), p3Path = W('part3.json', p3.out);
+// assemble --verify: kvorum teljesul
+const asm = run(['assemble', bodyPath, p1Path, p3Path, '--verify', qTrPath]);
+ok(asm.code === 0, 'assemble --verify: exit 0 (2-of-3 teljesul)');
+const asmRec = JSON.parse(asm.out);
+ok(s.verifyKeySuccession(asmRec, qTr).ok, 'az osszefesult rekord a kvorum-roottal verifikal');
+// assemble --verify kvorum alatt -> exit 1, nem ad ki hasznalhatatlan rekordot
+const asmUnder = run(['assemble', bodyPath, p1Path, '--verify', qTrPath]);
+ok(asmUnder.code === 1, 'assemble --verify kvorum alatt -> exit 1 (self-lockout vedelem)');
+// sign mar alairt body-ra -> hiba
+ok(run(['sign', W('signed-body.json', asm.out), q1Priv]).code === 2,
+  'sign mar osszefesult rekordra -> exit 2');
+// verify lanc-horgonnyal is megy (genesis -> utod lanc)
+const S1 = genKey(), S2 = genKey(), S3 = genKey();
+const succTr = s.buildTrustRootSuccessor({ providers: [], logs: [{ log_id: LOG, genesis: { sth: A.publicKey, receipt: null } }],
+  root_keys: [S1.publicKey, S2.publicKey, S3.publicKey], threshold: 2 }, qTr, [Q1.privateKey, Q2.privateKey], T0);
+const chainPath = W('chain.jsonl', JSON.stringify(qTr) + '\n' + JSON.stringify(succTr) + '\n');
+const succByNew = s.buildQuorumKeySuccession({ log_id: LOG, role: 'sth',
+  predecessor_fingerprint: s.keyFingerprint(A.publicKey), successor_public_key: B.publicKey,
+  effective_from_tree_size: 10 }, [S1.privateKey, S2.privateKey], T0);
+const succByNewPath = W('succ-by-new.json', JSON.stringify(succByNew) + '\n');
+ok(run(['verify', succByNewPath, chainPath]).code === 0,
+  'verify lanc-horgonnyal: az UJ kvorum rekordja az effektiv root ellen ervenyes');
+
+// ───────────────────────────────────────────────────────────────────────────
+section('8. End-to-end: a CLI-vel epitett rekordot a sidecar beagyazza');
 (async () => {
   const logDir = path.join(dir, 'log'); fs.mkdirSync(logDir);
   const receiptsPath = path.join(logDir, 'receipts.jsonl');
