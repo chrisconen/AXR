@@ -6,7 +6,7 @@
 
 A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
 
-**Current version:** 0.2.1 — production, anchored
+**Current version:** 0.5.0 (package) — the production pilot writes the frozen **0.2.1 wire format** with hourly anchoring
 **Status:** Pilot running on one live workflow with **hourly Merkle anchoring and STH key separation in production** since June 2026. Four pre-existing production bugs discovered and fixed because the receipts made them visible — plus two bugs AXR found in itself before they could reach the live log (see below).
 
 ### Maturity by layer
@@ -18,8 +18,10 @@ AXR ships as one repository spanning several maturity levels. Read a feature's l
 | Core: signing, chaining, per-step `input_hash`, canonicalization, cross-impl parity | 0.2.1 | **Stable** — production-tested, frozen wire format; hardened n8n node (guarded canonicalizer, HMAC `customer_ref`, fail-open, `logic_hash`) |
 | Anchoring: Merkle batching, Signed Tree Heads, monitor, OTS submission | 0.3 | **Deployed** — hourly anchoring cron live in production (local backend; OpenTimestamps switch planned), separate STH key; OTS Bitcoin proof delegated to `ots verify` |
 | Redactable receipts, side-effect attestation, trust root | 0.4 | **Hardening** — tested, evolving; APIs may still change |
+| Key succession: root-anchored key rotation (sidecar, monitor, both verifiers, CLI) | 0.5 | **New** — tested incl. cross-impl parity and multi-agent adversarial review; not yet exercised by the production pilot |
+| SIEM export: OCSF Detection Finding mapping + generic webhook | 0.5 | **New** — OCSF-shaped output (not formally certified), best-effort delivery by design |
 
-The 0.2 wire format is frozen: 0.1/0.2/0.3 logs verify byte-for-byte under the current verifier. New work is additive. Released versions are intended to be cut as git tags (`v0.2.x`, `v0.3.x`, `v0.4.x`); the `main` branch is the integration line. Run `npm test` (or see CI) for the full cross-implementation suite.
+The 0.2 wire format is frozen: 0.1/0.2/0.3 logs verify byte-for-byte under the current verifier. New work is additive. Released versions are intended to be cut as git tags (`v0.2.x` … `v0.5.x`); the `main` branch is the integration line. Run `npm test` (or see CI) for the full cross-implementation suite.
 
 ---
 
@@ -180,6 +182,42 @@ Two levels:
 `side_effects` is part of the signed receipt (so it is tamper-evident and anchored); the optional provider attestation verifies on top. Verifier check 14; tested in `axr-sideeffect-test.js`.
 
 **Trust root — closing the key→provider bootstrap (§8).** A plain attestation only proves *some* key signed the entry; nothing stops an operator from signing with its own key and calling it `google-calendar`. A **trust root** (`axr-trust-root.js`) is a root-signed, append-resistant allowlist mapping provider names to permitted attestation keys. Supply it with `node axr-verify.js … --trust-root trust-root.json`: an attestation now counts as `attested` only if its key is in the trust root for that provider — otherwise it is downgraded to a problem. The root key is held by a party independent of the operator (auditor, consortium, or published list), which is what makes the binding meaningful. Without a trust root the prior behavior is unchanged (backward compatible). Tested in `axr-trustroot-test.js`.
+
+### Key succession (0.5) — rotation distinguishable from compromise
+
+0.3/0.4 pinned one operator key per role (TOFU), so a legitimate, scheduled rotation looked exactly like a silent key swap. 0.5 moves the trust anchor to the independent **root key**: genesis keys are declared in the extended trust root (per log, per role `sth`/`receipt`), and every later key is authorized by a **root-signed `key_succession` record**. The only clock is `tree_size` (Merkle position — the operator cannot back-date it); there are deliberately no wall-clock validity windows.
+
+```bash
+# 1. authorize the rotation (root key holder)
+node axr-key-succession.js build root-priv.pem --log-id axr:agent:v1 --role sth \
+  --predecessor old-pub.pem --successor new-pub.pem --effective-from 1200 > succ.json
+
+# 2. the successor's FIRST STH embeds the record (withholding fix - the rotation is in the log itself)
+node axr-anchor.js receipts.jsonl new-priv.pem --succession succ.json
+
+# 3. the monitor distinguishes: authorized rotation = notice, anything else = violation
+node axr-monitor.js poll sth.jsonl old-pub.pem --trust-root trust-root.json
+#   -> KEY_ROTATED_AUTHORIZED (notice)  |  KEY_CHANGED_UNAUTHORIZED (violation)
+
+# 4. both verifiers verify rotation-spanning logs as one continuous log
+node axr-verify.js receipts.jsonl genesis-pub.pem sth.jsonl anchors.jsonl \
+  --trust-root trust-root.json --successions successions.jsonl
+python axr_verify.py ... # same flags, independent implementation
+```
+
+The key timeline is predecessor-linked and **fail-closed**: a broken link poisons everything after it (no "self-healing"), and two root-signed successions for the same boundary (a fork) authorize *neither* branch. Without a trust root every tool behaves bit-for-bit as 0.4. Spec: `AXR-SPEC-0.5.md`; tested across five suites including red-team paths (forged root, silent swap, boundary-violating signatures, forks).
+
+### SIEM export (0.5) — OCSF Detection Findings + webhook
+
+Monitor violations and key-lifecycle events map to **OCSF 1.1.0 Detection Finding** shape (`class_uid` 2004): `KEY_CHANGED_UNAUTHORIZED`/equivocation/truncation → Critical, `KEY_ROTATED_AUTHORIZED` → Informational, unknown violation codes → High (fail-closed). Finding uids are deterministic for SIEM-side dedup; AXR specifics travel under `unmapped.axr`. Honest boundary: OCSF-*shaped*, not formally certified.
+
+```bash
+node axr-monitor.js poll sth.jsonl pub.pem --ocsf-out findings.jsonl   # or '-' for stdout
+node axr-monitor.js poll sth.jsonl pub.pem --webhook https://siem.example/hook \
+  --webhook-token-file token.txt   # or AXR_WEBHOOK_TOKEN env
+```
+
+Delivery is **best-effort by design**: a dead SIEM endpoint can neither silence the monitor nor fail a consistent log — the exit code is always the detection result.
 
 ### Determinism and adversarial testing
 
@@ -378,11 +416,15 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
 | `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies); **0.2.1:** guarded canonicalizer, HMAC `customer_ref` + pepper bootstrap, fail-open, `logic_hash`, `AXR_DIR` env override |
 | `axr-workflow-lint.js` | **0.2.1:** CI gate against logic drift — fingerprints every attested node's code (SHA-256) in the exported workflow JSON and fails on mismatch with the generator's `logic_version`/`logic_hash` constants (`--manifest` emits fresh fingerprints) |
-| `axr-verify.js` | Standalone verifier (checks 1–14): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]`; **0.4 flags:** `--strict`, `--sth-key`, `--trust-root`, `--online` |
+| `axr-verify.js` | Standalone verifier (checks 1–15): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]`; **0.4 flags:** `--strict`, `--sth-key`, `--trust-root`, `--online`; **0.5 flags:** `--successions`, `--log-id` (rotation-spanning verification) |
 | `axr_verify.py` | **Independent** zero-dependency Python verifier (own canonicalizer, pure-Python Ed25519, RFC 6962 Merkle) — cross-implementation proof |
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back; **0.4:** `upgrade` subcommand (OTS calendar confirmation) |
 | `axr-trust-root.js` | **0.4:** trust-root builder/verifier CLI — root-signed provider key allowlist (`build`, `verify`) |
-| `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`) |
+| `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`); **0.5:** timeline-based key verification (`--trust-root`, `--successions`), `KEY_ROTATED_AUTHORIZED`/`KEY_CHANGED_UNAUTHORIZED`, OCSF export (`--ocsf-out`), webhook (`--webhook`) |
+| `axr-succession.js` | **0.5:** key-succession module — genesis-bearing trust root, root-signed succession records, predecessor-linked key timeline (transitive authorization, fail-closed forks), `keyAtTreeSize` |
+| `axr-key-succession.js` | **0.5:** succession CLI — `build` (root-signs a rotation), `verify` (against raw root key or signed trust root), `fingerprint` |
+| `axr-ocsf.js` | **0.5:** OCSF 1.1.0 Detection Finding mapping for monitor events — deterministic finding uids, fail-closed severity for unknown violation codes |
+| `axr-webhook.js` | **0.5:** generic best-effort webhook delivery (http/https only, retry, never affects detection results) |
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
 | `axr-anchor-test.js` | **0.3:** anchoring sidecar end-to-end test (idempotency, incremental anchoring, consistency) |
 | `axr-monitor-test.js` | **0.3:** monitor test (equivocation, truncation, root-mismatch, bad signature, journal compare) |
@@ -397,6 +439,13 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-strict-test.js` | **0.4:** `--strict` mode test — soft signals pass by default, become errors under strict |
 | `axr-keysep-test.js` | **0.4:** key-role separation test — STH key distinct from receipt key (`--sth-key`) |
 | `axr-incremental-test.js` | **0.4:** incremental anchoring (MMR) test — root byte-identical to from-scratch (n=1..40), multi-run cache, corrupt-cache rebuild |
+| `axr-succession-test.js` | **0.5:** key-timeline test — 35 assertions incl. red-team (forged signature, fingerprint lie, foreign root, broken chain, forks, post-fork continuation) |
+| `axr-anchor-succession-test.js` | **0.5:** `embedded_succession` test — backward compat, idempotency, signature+chain coverage, sidecar guards |
+| `axr-monitor-succession-test.js` | **0.5:** monitor key-succession test — authorized rotation vs forged/silent swaps, degraded mode, journal extension, chain-hash determinism |
+| `axr-verify-succession-test.js` | **0.5:** rotation-spanning verification, **cross-impl** — JS and Python must agree on accept AND reject across rotated-log fixtures |
+| `axr-key-succession-cli-test.js` | **0.5:** succession CLI test incl. end-to-end embed via the sidecar |
+| `axr-ocsf-test.js` | **0.5:** OCSF mapping test — severity table, structure, deterministic uid, fail-closed unknown codes |
+| `axr-webhook-test.js` | **0.5:** webhook test — live test server end-to-end, retry, token via file/env, plaintext warning, exit-code isolation |
 | `run-tests.js` | Unified test runner (`npm test`) — runs every suite, aggregates exit code for CI |
 | `package.json` | Package metadata, `npm test` wiring, zero runtime dependencies |
 | `.github/workflows/ci.yml` | CI matrix (Node 18/20/22 x Python 3.10/3.11/3.12) running the full suite incl. cross-impl parity |
@@ -405,6 +454,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `AXR-SPEC-0.2.md` | 0.2 protocol specification |
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity); §15 future directions (0.4+) |
 | `AXR-SPEC-0.4.md` | 0.4 specification (redactable, side-effect, trust root, key separation, incremental anchoring, strict mode) |
+| `AXR-SPEC-0.5.md` | 0.5 specification (key succession: records, one-clock boundary rule, timeline semantics, embedded succession, monitor codes, verifier check 15) |
 | `SECURITY.md` | Responsible-disclosure policy and supported versions |
 | `CONTRIBUTING.md` | Contribution guide (zero-dep, frozen wire format, tests-first) |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant 2.1 |

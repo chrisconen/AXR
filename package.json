@@ -40,6 +40,8 @@
     "axr-trust-root.js",
     "axr-succession.js",
     "axr-key-succession.js",
+    "axr-ocsf.js",
+    "axr-webhook.js",
     "axr_verify.py",
     "AXR-SPEC-0.2.md",
     "AXR-SPEC-0.3.md",

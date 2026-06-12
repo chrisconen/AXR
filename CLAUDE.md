@@ -65,11 +65,17 @@ KÉSZ (2026-06-12, mind a 18 suite zöld):
 6. `AXR-SPEC-0.5.md` + 0.4 §5 forward-pointer; CHANGELOG 0.5.0;
    package.json 0.5.0 + files
 
+KÉSZ (2026-06-12, folytatás):
+7. `axr-ocsf.js` — OCSF 1.1.0 Detection Finding mapping (monitor
+   `--ocsf-out`); a két kulcs-kód SIEM-eseménnyé vált; determinisztikus
+   finding-uid; fail-closed ismeretlen sértés-kódra
+8. `axr-webhook.js` — generikus best-effort kézbesítés (monitor `--webhook`);
+   token fájl/env-ből; a detekció eredményét sosem befolyásolja
+
 HÁTRA:
-- OCSF Detection Finding mapping-tábla (a két kulcs-kódra épül), majd
-  generikus webhook.
 - Halasztva 0.6+-ra (specben kimondva): revokáció, threshold-aláírás,
   recovery-ceremónia, wall-clock ablakok.
+- README frissítés 0.5-re (key succession + OCSF/webhook szekciók).
 
 ## Sorvégek — figyelem
 
