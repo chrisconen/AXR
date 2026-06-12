@@ -4,6 +4,34 @@ All notable changes to AXR are documented here. The project follows the
 spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring,
 0.4 redactable / side-effect / trust-root, 0.5 key succession).
 
+## [Unreleased]
+
+### Added
+
+- **OCSF Detection Finding export** (`axr-ocsf.js`; monitor `--ocsf-out
+  <file|->`). Maps monitor violations and security-relevant lifecycle notices
+  to OCSF 1.1.0 Detection Finding shape (class_uid 2004): the two 0.5 key
+  codes become detectable events — `KEY_ROTATED_AUTHORIZED` → Informational,
+  `KEY_CHANGED_UNAUTHORIZED` → Critical; equivocation/truncation/
+  non-append-only/invalid trust root → Critical; unknown violation codes map
+  to High (fail-closed, never silently dropped). Finding uid is a
+  deterministic hash of (log_id, code, message) so SIEM-side dedup works
+  across polls; all AXR specifics travel under `unmapped.axr`. Honest
+  boundary: OCSF-shaped output with the required fields, not formally
+  OCSF-certified. 16 assertions.
+- **Generic webhook delivery** (`axr-webhook.js`; monitor `--webhook <url>`,
+  `--webhook-token <bearer>`). Zero-dep HTTP(S) POST of the finding array
+  with retry; http/https schemes only. Delivery is best-effort by design: a
+  dead SIEM endpoint can neither silence the monitor nor fail a consistent
+  log — the exit code is always the detection's. 16 assertions incl.
+  end-to-end: tampered log → OCSF findings arrive at a live test server;
+  unreachable endpoint → explicit notice, exit code unchanged. Hardened after
+  Meridian cross-review: bearer token also accepted via
+  `--webhook-token-file` or `AXR_WEBHOOK_TOKEN` env (CLI args leak via
+  process list / shell history), an `http:` target prints an explicit
+  plaintext warning, and the operator-config trust boundary (no built-in
+  SSRF allowlist — by design) is stated in the module header.
+
 ## [0.5.0] - 2026-06-12
 
 Key-lifecycle layer: root-anchored key succession makes legitimate rotation
