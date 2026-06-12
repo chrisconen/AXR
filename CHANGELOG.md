@@ -2,7 +2,108 @@
 
 All notable changes to AXR are documented here. The project follows the
 spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring,
-0.4 redactable / side-effect / trust-root).
+0.4 redactable / side-effect / trust-root, 0.5 key succession).
+
+## [0.5.0] - 2026-06-12
+
+Key-lifecycle layer: root-anchored key succession makes legitimate rotation
+distinguishable from silent key compromise, end to end (sidecar → monitor →
+verifiers). Spec: `AXR-SPEC-0.5.md`. All features are opt-in; without a trust
+root every tool behaves bit-for-bit as 0.4. Four security findings were caught
+and closed during development by NEXUS/Meridian cross-review (noted below).
+
+### Added
+
+- **Key succession module** (`axr-succession.js`). Root-signed `key_succession`
+  records authorize operator key rotation; genesis keys come from the extended
+  trust root (per `log_id`, per role `sth`/`receipt`), so the starting point is
+  root-anchored — no TOFU weakness. `buildKeyTimeline` builds a
+  predecessor-linked timeline verified against the pinned root key;
+  `keyAtTreeSize` resolves the valid key at any tree size (tree_size is the
+  only clock — no operator-controlled wall-clock in the trust path). Missing
+  root genesis degrades to fail-closed. 31 assertions incl. 9 red-team cases
+  in `axr-succession-test.js`; the anchor embedding adds 17 more in
+  `axr-anchor-succession-test.js`.
+- **`embedded_succession` in the anchoring sidecar** (`axr-anchor.js`,
+  `--succession` CLI flag). After a rotation, the successor key's FIRST STH
+  embeds the full root-signed succession record, so a monitor sees the
+  rotation from the log itself (withholding fix). The field is covered by both
+  the STH signature and the chain hash (tamper-evident), embedding is
+  idempotent (later STHs revert to the 0.3 shape), and guards reject a
+  succession that does not authorize the signing key, a non-`sth` role, a
+  foreign `log_id` (found in NEXUS cross-review), or signing before
+  `effective_from_tree_size`. Without a succession the STH is byte-identical
+  to 0.3 — proved by the unchanged anchor suite.
+
+- **Succession-aware monitor** (`axr-monitor.js`, `--trust-root` /
+  `--successions` CLI flags). With a trust root the monitor anchors trust in
+  the independent root key instead of TOFU key pinning: it builds a
+  root-verified key timeline (genesis from the trust root, rotations from
+  `key_succession` records) and verifies every STH with the key valid at that
+  STH's `tree_size`. Embedded successions are root-verified BEFORE their key
+  is used for anything. New codes: `KEY_ROTATED_AUTHORIZED` (notice — rotation
+  is root-authorized) and `KEY_CHANGED_UNAUTHORIZED` (violation — key change
+  without root authorization, incl. forged/foreign-log successions and
+  unauthorized pinned-key swaps). An invalid trust root fails closed
+  (`TRUST_ROOT_INVALID`); a trust root without a genesis for the log degrades
+  to the old TOFU behavior with an explicit `DEGRADED` notice. The journal
+  gains `active_key_fingerprint` and `succession_chain_hash`;
+  `compareJournals` reports divergent succession chains as a conflict (only
+  when both journals have one — 0.3 journals stay compatible). Without a
+  trust root, behavior is bit-for-bit the old TOFU pinning — proved by the
+  unchanged monitor suite. 22 assertions in `axr-monitor-succession-test.js`,
+  built on the production path (`runAnchor` → `pollMonitor`).
+
+- **Rotation-spanning verification** (`axr-verify.js` check 15 + `axr_verify.py`
+  mirror; `--successions` / `--log-id` flags, extended `--trust-root`). With a
+  genesis-bearing trust root the verifiers build root-verified key timelines
+  for both roles and verify every signature with the key of its era: receipts
+  by leaf position (`leaf_index+1`), STHs by `tree_size` — the same boundary
+  rule as the monitor (successor signs from `effective_from_tree_size`).
+  Receipt-role successions come from the `--successions` file, sth-role ones
+  also from `embedded_succession` in the STH stream. Every succession is
+  root-verified before its key is used for anything; unauthorized timeline
+  segments report `KEY_CHANGED_UNAUTHORIZED`. Without a trust root (or
+  without a genesis for the log) behavior is exactly the old single-key /
+  `--sth-key` path. Cross-impl proof: `axr-verify-succession-test.js` runs
+  both verifiers on the same rotated-log fixtures (10 assertions: control,
+  happy path, boundary-violating signature, forged succession, post-rotation
+  tamper) — JS and Python agree on accept AND reject.
+
+- **`axr-key-succession` CLI** (`axr-key-succession.js`, added to `bin`).
+  `build` creates a root-signed succession record (predecessor from a PEM file
+  or a ready fingerprint) with self-verification before output; `verify`
+  checks a record against a raw root public key OR a signed trust root (the
+  trust root must verify itself first — no self-made anchors); `fingerprint`
+  prints a key's fingerprint for rotation prep. 15 assertions incl. an
+  end-to-end case: the CLI-built record embeds unchanged into the successor's
+  first STH via the sidecar. `axr-succession.js` added to the package `files`
+  list (anchor/monitor/verify now depend on it).
+
+### Fixed
+
+- **Fail-closed fork handling** (`buildKeyTimeline` + Python mirror): two (or
+  more) root-signed successions targeting the same
+  `effective_from_tree_size` no longer resolve "first-wins" — NO fork branch
+  is authorized and the chain is poisoned from that boundary on, so a rotation
+  built on either branch stays unauthorized too. Otherwise monitors/verifiers
+  with different input order or partial visibility could accept different
+  active keys for the same tree size — exactly the causality fork succession
+  must close (Meridian cross-review finding). Cross-impl enforced: a forked
+  receipt-succession makes both the JS and Python verifier reject the log.
+- **Transitive timeline authorization** (`buildKeyTimeline`): after a broken
+  chain link, properly-linked later successions no longer "self-heal" back to
+  `authorized=true` — an attacker could otherwise enter via one broken jump
+  and have every subsequent rotation appear authorized (NEXUS cross-review
+  finding, fail-closed fix).
+- **Deterministic succession chain hash** (monitor): records with equal
+  `effective_from_tree_size` (forks) are now tie-broken by canonical hash, so
+  two honest monitors seeing the same set in different order compute the same
+  `succession_chain_hash` instead of raising a false split-view conflict
+  (NEXUS cross-review finding).
+- `axr-crossverify-test.js` now falls back from `python3` to `python` (verified
+  Python 3.x) so the JS↔Python parity suite actually runs on Windows instead of
+  skipping (the Store `python3` alias is a non-functional stub).
 
 ## [0.4.1] - 2026-06
 

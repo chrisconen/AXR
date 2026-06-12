@@ -177,6 +177,10 @@ main key. A compromised receipt key cannot forge tree heads, and a compromised S
 key cannot forge receipts. Without `--sth-key`, the main key verifies both
 (backward compatible). Hardware/threshold key management remains out of scope.
 
+*0.5 generalizes this section: a role's key becomes a function of tree
+position (key succession), with `--sth-key` as the single-key special case —
+see `AXR-SPEC-0.5.md` §6.*
+
 ---
 
 ## 6. Strict mode
