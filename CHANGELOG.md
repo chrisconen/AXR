@@ -2,11 +2,56 @@
 
 All notable changes to AXR are documented here. The project follows the
 spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring,
-0.4 redactable / side-effect / trust-root, 0.5 key succession).
+0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
+root-lifecycle hardening + SIEM export).
 
-## [Unreleased]
+## [0.6.0] - 2026-06-12
+
+Root-lifecycle hardening: the 0.5 root key's own lifecycle closes — quorum
+signing, rotation/recovery, revocation, and a multi-party ceremony CLI.
+Spec: `AXR-SPEC-0.6.md`. Scope was decided via independent Meridian/NEXUS
+critiques (`AXR-0.6-SCOPE.md`); every feature is opt-in and a trust-root-less
+deployment keeps the 0.3/0.4 behavior bit-for-bit.
 
 ### Added
+
+- **Quorum root (M-of-N multi-signature)** (`axr-succession.js`:
+  `signQuorumPart`/`assembleQuorum`/`verifyQuorumSigned`, quorum-mode trust
+  root). Records verify with M distinct declared Ed25519 signatures over the
+  same canonical body; the signature set is strictly fingerprint-ordered
+  (enforced at verify time) so identical sets are byte-identical. Strict
+  fail-closed: undeclared/duplicate signer, M-1 signatures, tampered body,
+  unordered set, post-hoc legacy signature field all reject. Honest naming:
+  multi-signature, not threshold crypto — root compromise becomes quorum
+  compromise, and the spec's quorum-policy section says so. Recommended
+  default 2-of-3 (not enforced; M=1/N=1 stays valid). Monitor and both
+  verifiers anchor on the trust-root object (single OR quorum).
+- **Root rotation and recovery** (`buildTrustRootSuccessor`,
+  `verifyTrustRootChain`, `parseTrustRootInput`). A successor trust root is
+  signed by the predecessor's quorum and chained via
+  `predecessor_trust_root_hash`; consumers accept single-record, array or
+  JSONL-chain `--trust-root` inputs, the effective root is the chain tail.
+  No self-authorizing roots (a successor is never valid standalone); a 0.5
+  single-key root rotates to a quorum successor (migration path). The
+  monitor pins the genesis hash in its journal — a substituted,
+  self-consistent attacker chain is `TRUST_ROOT_CHANGED`, fail-closed.
+- **Revocation** (`key_revocation`, `--revocations` on monitor and both
+  verifiers). Retires a key's signing power from `revoked_at_tree_size`
+  (earliest boundary wins). Three-tier semantics enforced in JS and Python:
+  anchored pre-boundary artifacts stay valid; unproven pre-boundary is
+  fail-closed (a stolen old key cannot fabricate the past); post-boundary is
+  `KEY_REVOKED`. Forged revocations are `REVOCATION_UNAUTHORIZED` (a
+  revocation-as-DoS attempt is itself a signal). OCSF mapping extended:
+  `KEY_REVOKED`/`TRUST_ROOT_CHANGED` Critical, `REVOCATION_UNAUTHORIZED`
+  High.
+- **Ceremony CLI** (`axr-key-succession`): `body succession|revocation|
+  root-successor` → `sign` (per machine) → `assemble --verify` (refuses to
+  emit a record consumers would reject — self-lockout protection); `revoke`
+  builds a single-key revocation; `verify` dispatches on record_type and
+  accepts raw-PEM, trust-root and chain anchors.
+- 92 new assertions across five suites (quorum core, quorum e2e, root
+  rotation, revocation, CLI ceremony), incl. Python cross-impl agreement on
+  accept AND reject for every 0.6 mechanism.
 
 - **OCSF Detection Finding export** (`axr-ocsf.js`; monitor `--ocsf-out
   <file|->`). Maps monitor violations and security-relevant lifecycle notices

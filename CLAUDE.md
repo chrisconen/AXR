@@ -72,10 +72,12 @@ KÉSZ (2026-06-12, folytatás):
 8. `axr-webhook.js` — generikus best-effort kézbesítés (monitor `--webhook`);
    token fájl/env-ből; a detekció eredményét sosem befolyásolja
 
-## Aktív munka: 0.6 root-lifecycle hardening
+## Aktív munka: 0.6 root-lifecycle hardening — KÉSZ (2026-06-12)
 
-Scope DÖNTÖTT (AXR-0.6-SCOPE.md, 2026-06-12, Chris delegálta a CTO-nak).
-Sorrend: P1 → P3 → P2, a CLI minden inkrementummal együtt landol.
+Scope: AXR-0.6-SCOPE.md (Chris delegálta a CTO-nak). Mind az öt inkrementum
+leszállítva (kvórum-root, root-rotáció+genesis-pin, revokáció 3-szintű
+szabállyal, ceremónia-CLI, spec AXR-SPEC-0.6.md), Meridian+NEXUS
+keresztreview-val. Release: v0.6.0. Eredeti terv (referenciának):
 
 1. **P1 kvórum-root:** trust root `root_keys: [pem...]` + `threshold: M`;
    M különböző deklarált kulcs aláírása ugyanazon kanonikus body felett

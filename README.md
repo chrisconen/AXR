@@ -6,7 +6,7 @@
 
 A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
 
-**Current version:** 0.5.0 (package) — the production pilot writes the frozen **0.2.1 wire format** with hourly anchoring
+**Current version:** 0.6.0 (package) — the production pilot writes the frozen **0.2.1 wire format** with hourly anchoring
 **Status:** Pilot running on one live workflow with **hourly Merkle anchoring and STH key separation in production** since June 2026. Four pre-existing production bugs discovered and fixed because the receipts made them visible — plus two bugs AXR found in itself before they could reach the live log (see below).
 
 ### Maturity by layer
@@ -19,7 +19,8 @@ AXR ships as one repository spanning several maturity levels. Read a feature's l
 | Anchoring: Merkle batching, Signed Tree Heads, monitor, OTS submission | 0.3 | **Deployed** — hourly anchoring cron live in production (local backend; OpenTimestamps switch planned), separate STH key; OTS Bitcoin proof delegated to `ots verify` |
 | Redactable receipts, side-effect attestation, trust root | 0.4 | **Hardening** — tested, evolving; APIs may still change |
 | Key succession: root-anchored key rotation (sidecar, monitor, both verifiers, CLI) | 0.5 | **New** — tested incl. cross-impl parity and multi-agent adversarial review; not yet exercised by the production pilot |
-| SIEM export: OCSF Detection Finding mapping + generic webhook | 0.5 | **New** — OCSF-shaped output (not formally certified), best-effort delivery by design |
+| SIEM export: OCSF Detection Finding mapping + generic webhook | 0.6 | **New** — OCSF-shaped output (not formally certified), best-effort delivery by design |
+| Root-lifecycle hardening: quorum root (M-of-N), root rotation/recovery, revocation, ceremony CLI | 0.6 | **New** — tested incl. cross-impl parity; quorum policy is part of the threat model (see spec §2.3) |
 
 The 0.2 wire format is frozen: 0.1/0.2/0.3 logs verify byte-for-byte under the current verifier. New work is additive. Released versions are intended to be cut as git tags (`v0.2.x` … `v0.5.x`); the `main` branch is the integration line. Run `npm test` (or see CI) for the full cross-implementation suite.
 
@@ -206,6 +207,17 @@ python axr_verify.py ... # same flags, independent implementation
 ```
 
 The key timeline is predecessor-linked and **fail-closed**: a broken link poisons everything after it (no "self-healing"), and two root-signed successions for the same boundary (a fork) authorize *neither* branch. Without a trust root every tool behaves bit-for-bit as 0.4. Spec: `AXR-SPEC-0.5.md`; tested across five suites including red-team paths (forged root, silent swap, boundary-violating signatures, forks).
+
+### Root-lifecycle hardening (0.6) — the root key's own lifecycle
+
+0.5 concentrated trust in one root key. 0.6 closes that key's lifecycle, all opt-in:
+
+- **Quorum root (M-of-N multi-signature):** the trust root declares `root_keys` + `threshold`; records verify with M distinct Ed25519 signatures over the same canonical body (strictly fingerprint-ordered — enforced). Honest naming: multi-signature, *not* threshold crypto — root compromise becomes quorum compromise, and the spec's quorum-policy section (§2.3) says so. Recommended default: 2-of-3.
+- **Root rotation & recovery:** a successor trust root is signed by the *predecessor's* quorum (`predecessor_trust_root_hash` chain). No self-authorizing roots; a 0.5 single-key root migrates to a quorum the same way. The monitor pins the genesis hash — a substituted chain is `TRUST_ROOT_CHANGED`.
+- **Revocation:** a root/quorum-signed `key_revocation` retires a key from a tree-size boundary. Three-tier semantics: anchored pre-boundary artifacts stay valid; unproven pre-boundary is fail-closed; post-boundary is `KEY_REVOKED`.
+- **Ceremony CLI:** `axr-key-succession body → sign → assemble --verify` — multi-party signing without hand-crafted JSON; `assemble --verify` refuses to emit a record the consumers would reject.
+
+Spec: `AXR-SPEC-0.6.md`; scope decision trail: `AXR-0.6-SCOPE.md`. 92 assertions across five suites with Python cross-impl agreement.
 
 ### SIEM export (0.5) — OCSF Detection Findings + webhook
 
@@ -421,8 +433,8 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back; **0.4:** `upgrade` subcommand (OTS calendar confirmation) |
 | `axr-trust-root.js` | **0.4:** trust-root builder/verifier CLI — root-signed provider key allowlist (`build`, `verify`) |
 | `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`); **0.5:** timeline-based key verification (`--trust-root`, `--successions`), `KEY_ROTATED_AUTHORIZED`/`KEY_CHANGED_UNAUTHORIZED`, OCSF export (`--ocsf-out`), webhook (`--webhook`) |
-| `axr-succession.js` | **0.5:** key-succession module — genesis-bearing trust root, root-signed succession records, predecessor-linked key timeline (transitive authorization, fail-closed forks), `keyAtTreeSize` |
-| `axr-key-succession.js` | **0.5:** succession CLI — `build` (root-signs a rotation), `verify` (against raw root key or signed trust root), `fingerprint` |
+| `axr-succession.js` | **0.5:** key-succession module — genesis-bearing trust root, root-signed succession records, predecessor-linked key timeline (transitive authorization, fail-closed forks), `keyAtTreeSize`; **0.6:** quorum primitives (`signQuorumPart`/`assembleQuorum`/`verifyQuorumSigned`), trust-root chains (`buildTrustRootSuccessor`/`verifyTrustRootChain`), revocation (`key_revocation`, `revoked_from`) |
+| `axr-key-succession.js` | **0.5:** succession CLI — `build`, `verify`, `fingerprint`; **0.6:** ceremony (`body`/`sign`/`assemble --verify`), `revoke`, chain-capable anchors |
 | `axr-ocsf.js` | **0.5:** OCSF 1.1.0 Detection Finding mapping for monitor events — deterministic finding uids, fail-closed severity for unknown violation codes |
 | `axr-webhook.js` | **0.5:** generic best-effort webhook delivery (http/https only, retry, never affects detection results) |
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
@@ -445,7 +457,11 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-verify-succession-test.js` | **0.5:** rotation-spanning verification, **cross-impl** — JS and Python must agree on accept AND reject across rotated-log fixtures |
 | `axr-key-succession-cli-test.js` | **0.5:** succession CLI test incl. end-to-end embed via the sidecar |
 | `axr-ocsf-test.js` | **0.5:** OCSF mapping test — severity table, structure, deterministic uid, fail-closed unknown codes |
-| `axr-webhook-test.js` | **0.5:** webhook test — live test server end-to-end, retry, token via file/env, plaintext warning, exit-code isolation |
+| `axr-webhook-test.js` | **0.6:** webhook test — live test server end-to-end, retry, token via file/env, plaintext warning, exit-code isolation |
+| `axr-quorum-test.js` | **0.6:** quorum core test — 2-of-3 build/verify, all fail-closed invariants (M-1, duplicate/undeclared signer, tampered body, unordered set) |
+| `axr-quorum-e2e-test.js` | **0.6:** quorum end-to-end — production path through sidecar/monitor/both verifiers, under-quorum rejection |
+| `axr-rootrotation-test.js` | **0.6:** trust-root chain test — rotation, migration from single-key, genesis-pin (`TRUST_ROOT_CHANGED`), self-authorizing successor rejected |
+| `axr-revocation-test.js` | **0.6:** revocation test — three-tier rule in both verifiers, monitor `KEY_REVOKED`, forged revocation as `REVOCATION_UNAUTHORIZED` |
 | `run-tests.js` | Unified test runner (`npm test`) — runs every suite, aggregates exit code for CI |
 | `package.json` | Package metadata, `npm test` wiring, zero runtime dependencies |
 | `.github/workflows/ci.yml` | CI matrix (Node 18/20/22 x Python 3.10/3.11/3.12) running the full suite incl. cross-impl parity |
@@ -455,6 +471,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `AXR-SPEC-0.3.md` | 0.3 draft specification (anchoring, generative steps, threat model, identity); §15 future directions (0.4+) |
 | `AXR-SPEC-0.4.md` | 0.4 specification (redactable, side-effect, trust root, key separation, incremental anchoring, strict mode) |
 | `AXR-SPEC-0.5.md` | 0.5 specification (key succession: records, one-clock boundary rule, timeline semantics, embedded succession, monitor codes, verifier check 15) |
+| `AXR-SPEC-0.6.md` | 0.6 specification (quorum root + policy threat model, root rotation/recovery chain, revocation three-tier semantics, ceremony CLI) |
 | `SECURITY.md` | Responsible-disclosure policy and supported versions |
 | `CONTRIBUTING.md` | Contribution guide (zero-dep, frozen wire format, tests-first) |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant 2.1 |
