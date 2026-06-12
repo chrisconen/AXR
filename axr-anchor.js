@@ -24,7 +24,9 @@
 // Hasznalat (CLI):
 //   node axr-anchor.js <receipts.jsonl> <private-key.pem> \
 //        [--sth sth.jsonl] [--anchors anchors.jsonl] \
-//        [--backend local|opentimestamps] [--log-id axr:agent:v1]
+//        [--backend local|opentimestamps] [--log-id axr:agent:v1] \
+//        [--succession key-succession.json]   (0.5: rotacio utan az utod
+//                                              elso STH-jaba agyazodik be)
 //
 // Nulla kulso fuggoseg - csak a Node beepitett moduljai + a kozos axr-core.js.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -32,7 +34,9 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const crypto = require('crypto');
 const axr = require('./axr-core');
+const succession = require('./axr-succession');
 
 const LEAF_TYPES = ['step', 'workflow', 'identity'];
 
@@ -166,6 +170,10 @@ async function submitBackend(name, rootHash, treeSize, now, opts) {
 //   logId         (opc.)      - default: 'axr:default:v1'
 //   now           (opc.)      - () => ISO timestamp (tesztelhetoseghez)
 //   timeoutMs     (opc.)      - backend HTTP timeout
+//   succession    (opc.)      - root-alairt key_succession rekord (role=sth);
+//                               az utod kulcs ELSO STH-jaba agyazodik be
+//                               (embedded_succession, 0.5). Nelkule az STH a
+//                               mai (0.3) formaban keszul - nulla valtozas.
 async function runAnchor(opts) {
   if (!opts.receiptsPath) throw new Error('receiptsPath kotelezo');
   if (!opts.privateKeyPem) throw new Error('privateKeyPem kotelezo');
@@ -206,11 +214,43 @@ async function runAnchor(opts) {
   }
   for (let i = from; i < leafHashes.length; i++) peaks = axr.mmrAppend(peaks, leafHashes[i]);
   const rootHash = axr.mmrRoot(peaks);
+
+  // 1/b. Kulcs-utodlas beagyazasa (0.5): ha a hivo atad egy root-alairt
+  // key_succession rekordot, az az UTOD kulcs ELSO STH-jaba kerul be
+  // (embedded_succession). A signablePart es a chainHash nem vagja le, tehat
+  // az alairas ES a lanc is fedi -> a beagyazott rekord manipulacio-evidens.
+  // Withholding-fix: a monitor a rotaciot magabol a logbol latja, nem kell a
+  // successiont kulon csatornan terjeszteni. Idempotens: ha barmely korabbi
+  // STH mar beagyazta ezt az utod-kulcsot, nem ismeteljuk - az STH a mai
+  // (0.3) formaban keszul. Succession nelkul a viselkedes byte-ra a regi.
+  let embedSuccession = null;
+  if (opts.succession) {
+    const sc = opts.succession;
+    if (sc.record_type !== 'key_succession' || sc.role !== 'sth')
+      throw new Error('succession: csak role=sth key_succession rekord agyazhato STH-ba');
+    // a succession ehhez a loghoz tartozik? (idegen log ervenyes rekordja sem agyazhato be)
+    if (sc.log_id !== logId)
+      throw new Error('succession: a rekord log_id-ja (' + sc.log_id + ') nem egyezik a sidecar logjaval (' + logId + ')');
+    // a succession tenyleg az STH-t alairo kulcsot autorizalja?
+    const signerPem = crypto.createPublicKey(opts.privateKeyPem)
+      .export({ type: 'spki', format: 'pem' });
+    if (sc.successor_fingerprint !== succession.keyFingerprint(signerPem))
+      throw new Error('succession: a successor_fingerprint nem az STH-t alairo kulcse');
+    // hatar-szabaly: az utod csak tree_size >= effective_from_tree_size-tol irhat ala
+    if (leaves.length < sc.effective_from_tree_size)
+      throw new Error('succession: a fa-meret (' + leaves.length + ') az effective_from_tree_size (' +
+        sc.effective_from_tree_size + ') hatara elott van - az utod meg nem irhat ala');
+    const already = sths.some(t => t.embedded_succession &&
+      t.embedded_succession.successor_fingerprint === sc.successor_fingerprint);
+    if (!already) embedSuccession = sc;
+  }
+
   const sthBody = {
-    axr_version: '0.3', record_type: 'sth', log_id: logId,
+    axr_version: embedSuccession ? '0.5' : '0.3', record_type: 'sth', log_id: logId,
     tree_size: leaves.length, root_hash: rootHash, timestamp: now(),
     previous_sth_hash: lastSth ? axr.chainHash(lastSth) : null
   };
+  if (embedSuccession) sthBody.embedded_succession = embedSuccession;
   sthBody.signature = axr.signReceipt(sthBody, opts.privateKeyPem);
   appendJsonl(sthPath, [sthBody]);
   // a frissitett inkrementalis allapot perzisztalasa (atomian)
@@ -351,7 +391,8 @@ if (require.main === module) {
   const [receiptsPath, keyPath] = positional;
   if (!receiptsPath || !keyPath) {
     console.error('Hasznalat: node axr-anchor.js <receipts.jsonl> <sth-private-key.pem> ' +
-      '[--sth sth.jsonl] [--anchors anchors.jsonl] [--backend local|opentimestamps] [--log-id axr:agent:v1]\n' +
+      '[--sth sth.jsonl] [--anchors anchors.jsonl] [--backend local|opentimestamps] [--log-id axr:agent:v1] ' +
+      '[--succession key-succession.json]\n' +
       '       node axr-anchor.js upgrade <anchors.jsonl>');
     process.exit(2);
   }
@@ -360,7 +401,8 @@ if (require.main === module) {
     receiptsPath, privateKeyPem,
     sthPath: flags.sth, anchorsPath: flags.anchors,
     backends: flags.backend ? [flags.backend] : ['local'],
-    logId: flags['log-id']
+    logId: flags['log-id'],
+    succession: flags.succession ? JSON.parse(fs.readFileSync(flags.succession, 'utf8')) : undefined
   }).then(res => {
     if (!res.created) {
       console.log(`Nincs teendo: ${res.reason} (fa-meret ${res.treeSize}, lefedve ${res.coveredSize}).`);
