@@ -4,3 +4,19 @@ __pycache__/
 # witness-agensek sajat kulcsai + cosign-allapot (privat kulcs SOSEM commitolando)
 .devlog-keys/
 .devlog-build/
+
+# ── Lokalis uzemeltetesi / munka-artefaktumok (nem protokoll-tartalom) ──────────
+# Lokalis monitor-deploy / export bundle-ok (gepfuggok, sajat log-masolat + kulcsok)
+monitor-local/
+monitor-export/
+monitor-laptop-bundle/
+monitor.yml
+# Regi node-verzio backup / patch / lokalis publish-script
+axr-node-v021-backup.js
+patch-v022.js
+axr-publish-sth.sh
+# Munka-jegyzetek, draftok, lokalis manifest
+README-transparency-repo.md
+manifest.json
+axr ellenőrzés.txt
+lint teszt.txt
