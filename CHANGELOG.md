@@ -5,6 +5,38 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.0.2] - 2026-06-13
+
+Additive tooling/robustness on top of the frozen 1.0 contract (no protocol,
+wire-format, or canonicalization change).
+
+### Changed
+
+- **Dev-log snapshot now carries genuinely process-independent witness
+  cosignatures.** The two cosignatures in `devlog/sth.jsonl` are no longer
+  produced inside the orchestrator process: the real reviewer agents each
+  generated their own Ed25519 key and cosigned the STH in their own separate
+  process (Meridian via Codex/GPT-5.5 → `devlog/meridian.pubkey.pem`,
+  `sha256:08d5e6dc…`; NEXUS via Gemini → `devlog/nexus.pubkey.pem`,
+  `sha256:c73214af…`). The orchestrator never saw either private key — it only
+  assembled the finished cosignatures. `devlog/README.md` updated: this is
+  genuine *process-level* independence; the only remaining gap to full
+  zero-trust is same-machine custody (production = separate security zones).
+- `buildDevlog()` gained `opts.witnesses` (externally supplied witness public
+  keys → used in the `witness_set`, internal witness keygen skipped) and
+  `opts.skipCosign` (the orchestrator does not cosign — external agents produce
+  the cosignatures), enabling the genuine-independence flow above.
+
+### Added
+
+- **`axr-witness.js sign` state-write fallback for restricted filesystems.**
+  The atomic `tmp → rename` state update now falls back to a direct write when
+  `rename` throws (`EPERM` under sandboxes, file locks, AV, network FS), and an
+  `AXR_WITNESS_NO_ATOMIC=1` escape hatch forces the direct path on known-flaky
+  filesystems. The cosignature (a deterministic, stateless signature) is never
+  blocked by a state-persistence quirk; the stateful equivocation guards still
+  apply on the fallback path. New CLI test cases cover both.
+
 ## [1.0.1] - 2026-06-13
 
 Additive tooling on top of the frozen 1.0 contract (no protocol change): AXR

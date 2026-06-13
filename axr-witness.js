@@ -101,9 +101,25 @@ if (cmd === 'sign') {
   // allapot frissitese
   state[sth.log_id] = { tree_size: sth.tree_size, root_hash: sth.root_hash, sth_hash: sthHash,
     updated_at: new Date().toISOString() };
-  const tmp = flags.state + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2) + '\n');
-  fs.renameSync(tmp, flags.state);
+  const stateText = JSON.stringify(state, null, 2) + '\n';
+  // Alapban atomi csere (tmp -> rename), hogy egy felbeszakado iras ne hagyjon
+  // torrent (torn) state-fajlt. Egyes fajlrendszereken (sandbox, fajlzarolas,
+  // viruskereso, halozati FS) a rename EPERM-et dob; ilyenkor - vagy ha az
+  // operator az AXR_WITNESS_NO_ATOMIC env-kapcsoloval kikenyszeriti - kozvetlen
+  // iras a fallback. A state-frissites igy is helyes; a cosignature kibocsatasat
+  // (a determinisztikus, allapotmentes alairast) ez sosem blokkolhatja.
+  if (process.env.AXR_WITNESS_NO_ATOMIC) {
+    fs.writeFileSync(flags.state, stateText);
+  } else {
+    const tmp = flags.state + '.tmp';
+    fs.writeFileSync(tmp, stateText);
+    try {
+      fs.renameSync(tmp, flags.state);
+    } catch (e) {
+      fs.writeFileSync(flags.state, stateText);
+      try { fs.unlinkSync(tmp); } catch (_) {}
+    }
+  }
 
   const out = JSON.stringify(cosig) + '\n';
   if (flags.out) { fs.writeFileSync(flags.out, out); console.error(`Cosignolva: tree_size=${sth.tree_size}, witness=${cosig.witness_fingerprint.slice(0, 20)}... -> ${flags.out}`); }

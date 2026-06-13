@@ -50,8 +50,15 @@ function buildDevlog(opts) {
   fs.mkdirSync(dir, { recursive: true });
   const LOG = JOURNAL_LOG_ID;
 
-  // kulcsok: root (bizalmi horgony), op (dev-log alairo), meridian + nexus (witness)
+  // kulcsok: root (bizalmi horgony), op (dev-log alairo), meridian + nexus (witness).
+  // GENUINE-fuggetlen mod (opts.witnesses): a witness PUBLIKUS kulcsait a kulso
+  // agensek adjak (a privat kulcsot az orchestrator NEM birtokolja); ilyenkor
+  // belso witness-keygen es belso cosign NINCS - a cosignature-okat az agensek
+  // sajat processzben allitjak elo (lasd opts.skipCosign).
   const K = opts.keys || { root: genKey(), op: genKey(), meridian: genKey(), nexus: genKey() };
+  const witnessList = opts.witnesses || [
+    { name: 'meridian', public_key: K.meridian.publicKey },
+    { name: 'nexus', public_key: K.nexus.publicKey }];
 
   const entries = fs.readFileSync(opts.journalPath, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
 
@@ -61,8 +68,7 @@ function buildDevlog(opts) {
     K.root.privateKey, K.root.publicKey, now);
   // witness_set: a reviewer-agensek (Meridian, NEXUS), threshold 2
   const witnessSet = succ.buildWitnessSet({ log_id: LOG, witness_threshold: 2, effective_from_tree_size: 1,
-    witnesses: [{ name: 'meridian', public_key: K.meridian.publicKey },
-                { name: 'nexus', public_key: K.nexus.publicKey }] }, K.root.privateKey, now);
+    witnesses: witnessList }, K.root.privateKey, now);
 
   // 2. receiptek a naplobol (az op kulcs irja ala)
   const { receipts, agents } = buildJournalReceipts(entries, K.op.privateKey, LOG);
@@ -85,13 +91,20 @@ function buildDevlog(opts) {
     backends: ['local'], logId: LOG, now, privateKeyPem: K.op.privateKey,
     controlPath: files.control, controlTrustRootPath: files.trustRoot
   }).then(() => {
-    // 4. a witnessek (Meridian, NEXUS) cosignoljak az STH-(ka)t a SAJAT kulcsukkal
-    const sths = fs.readFileSync(files.sth, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-    const cosigned = sths.map(sth => sth.record_type === 'sth'
-      ? succ.assembleWitnessCosignatures(sth, [succ.cosignWitness(sth, K.meridian.privateKey),
-                                               succ.cosignWitness(sth, K.nexus.privateKey)])
-      : sth);
-    fs.writeFileSync(files.sth, cosigned.map(r => JSON.stringify(r)).join('\n') + '\n');
+    // 4. cosign. GENUINE mod (opts.skipCosign): az orchestrator NEM cosignol -
+    // a cosignature-okat a kulso agensek allitjak elo, a hivo adja be oket
+    // opts.applyCosignatures(sthBody)->[cosignature] utjan. Alapesetben (demo)
+    // a belso witness-kulcsok cosignolnak.
+    if (!opts.skipCosign) {
+      const sths = fs.readFileSync(files.sth, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+      const cosigned = sths.map(sth => sth.record_type === 'sth'
+        ? succ.assembleWitnessCosignatures(sth, [succ.cosignWitness(sth, K.meridian.privateKey),
+                                                 succ.cosignWitness(sth, K.nexus.privateKey)])
+        : sth);
+      fs.writeFileSync(files.sth, cosigned.map(r => JSON.stringify(r)).join('\n') + '\n');
+    }
+    const sthCount = fs.readFileSync(files.sth, 'utf8').trim().split('\n').filter(Boolean)
+      .map(JSON.parse).filter(x => x.record_type === 'sth').length;
 
     // 5. verifikacio: monitor (--require-witnesses) + a teljes lanc
     const trRecords = [trustRoot];
@@ -101,7 +114,7 @@ function buildDevlog(opts) {
 
     return { dir, files, agents, entryCount: entries.length, keys: K,
       verdict: { monitor_ok: mon.ok, monitor_violations: mon.violations,
-                 monitor_notices: mon.notices, sth_count: cosigned.filter(x => x.record_type === 'sth').length } };
+                 monitor_notices: mon.notices, sth_count: sthCount } };
   });
 }
 

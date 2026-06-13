@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 *.tmp
+# witness-agensek sajat kulcsai + cosign-allapot (privat kulcs SOSEM commitolando)
+.devlog-keys/
+.devlog-build/

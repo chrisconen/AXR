@@ -49,8 +49,9 @@ function mkSth(tree_size, rootTag) {
   sth.signature = axr.signReceipt(sth, op.privateKey);
   return sth;
 }
-function run(args) {
-  try { return { code: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8', stdio: 'pipe' }) }; }
+function run(args, env) {
+  try { return { code: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8', stdio: 'pipe',
+    env: env ? Object.assign({}, process.env, env) : process.env }) }; }
   catch (e) { return { code: e.status == null ? -1 : e.status, out: (e.stdout || '') + (e.stderr || '') }; }
 }
 
@@ -82,6 +83,25 @@ const sth8 = W('sth8.json', JSON.stringify(mkSth(8)) + '\n');
 const rExt = run(['sign', sth8, w1Priv, '--state', state]);
 ok(rExt.code === 0 && JSON.parse(fs.readFileSync(state, 'utf8'))[LOG].tree_size === 8,
   'nagyobb tree_size -> elfogadva, a state elorelep (8)');
+
+// ───────────────────────────────────────────────────────────────────────────
+section('2b. state-iras fallback (nem-atomi mod: sandbox/halozati FS)');
+// AXR_WITNESS_NO_ATOMIC: a rename helyett kozvetlen iras - a cosignature
+// kibocsatasat es a state-frissitest egy rename-tilto FS sem blokkolhatja.
+const naState = path.join(dir, 'w1-noatomic-state.json');
+const sthNA = W('sthNA.json', JSON.stringify(mkSth(5)) + '\n');
+const rNA = run(['sign', sthNA, w1Priv, '--state', naState], { AXR_WITNESS_NO_ATOMIC: '1' });
+ok(rNA.code === 0, 'nem-atomi mod: sign exit 0');
+const cosigNA = JSON.parse(rNA.out);
+ok(cosigNA.witness_fingerprint === s.keyFingerprint(W1.publicKey) && cosigNA.signature,
+  'nem-atomi mod: a cosignature helyes (a determinisztikus alairas attol meg azonos)');
+ok(fs.existsSync(naState) && JSON.parse(fs.readFileSync(naState, 'utf8'))[LOG].tree_size === 5,
+  'nem-atomi mod: a state frissult (tree_size 5), .tmp nem maradt');
+ok(!fs.existsSync(naState + '.tmp'), 'nem-atomi mod: nincs hatrahagyott .tmp');
+// a stateful invarians a fallback uton is el: kisebb tree_size elutasitva
+const rNATrunc = run(['sign', sth3, w1Priv, '--state', naState], { AXR_WITNESS_NO_ATOMIC: '1' });
+ok(rNATrunc.code === 1 && /TRUNCATION/.test(rNATrunc.out),
+  'nem-atomi mod: a stateful TRUNCATION-vedelem tovabbra is el');
 
 // ───────────────────────────────────────────────────────────────────────────
 section('3. verify');
