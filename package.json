@@ -29,7 +29,8 @@
     "axr-anchor": "axr-anchor.js",
     "axr-monitor": "axr-monitor.js",
     "axr-key-succession": "axr-key-succession.js",
-    "axr-report": "axr-report.js"
+    "axr-report": "axr-report.js",
+    "axr-rollout": "axr-rollout.js"
   },
   "files": [
     "axr-core.js",
@@ -43,6 +44,7 @@
     "axr-key-succession.js",
     "axr-control.js",
     "axr-report.js",
+    "axr-rollout.js",
     "axr-ocsf.js",
     "axr-webhook.js",
     "axr_verify.py",
@@ -53,6 +55,7 @@
     "AXR-SPEC-0.6.md",
     "AXR-SPEC-0.7.md",
     "COMPLIANCE.md",
+    "ROLLOUT.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
     "CODE_OF_CONDUCT.md",

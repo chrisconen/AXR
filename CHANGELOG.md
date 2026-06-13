@@ -9,6 +9,21 @@ root-lifecycle hardening + SIEM export, 0.7 control log).
 
 ### Added
 
+- **Production rollout tooling** (`axr-rollout.js`, in `bin` as `axr-rollout`;
+  runbook `ROLLOUT.md`). Brings a running 0.2–0.4 pilot (one operator key,
+  TOFU) onto the 0.5–0.7 root-anchored model without losing the existing log.
+  `bootstrap` builds a trust root (single or quorum) from the keys already in
+  use — the genesis IS the current signer, so existing STHs stay valid (no
+  re-signing/re-anchoring). `preflight` is a GO/NO-GO readiness check that
+  targets the self-lockout risk NEXUS flagged: its key finding `GENESIS_SIGNS`
+  /`GENESIS_MISMATCH` confirms the declared genesis actually signs the earliest
+  STH; it also flags an invalid trust root, a committing STH with no control
+  log shipped, plus warnings for local-only anchoring (N3), no independent
+  monitor (N4) and a degenerate quorum threshold — each with a remediation
+  hint, and it embeds the authoritative `axr-verify.js` verdict. The runbook
+  documents the migration order and the common self-lockout traps. 17
+  assertions incl. the GENESIS_MISMATCH self-lockout case. Separate track (not
+  protocol scope) — the adoption-safety net.
 - **Compliance Report Generator** (`axr-report.js`, in `bin` as `axr-report`).
   Produces a self-contained, human-auditable HTML (or JSON) report from an AXR
   log: log overview, signature/anchoring integrity, the key-governance

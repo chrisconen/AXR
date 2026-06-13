@@ -248,6 +248,22 @@ node axr-monitor.js poll sth.jsonl pub.pem --webhook https://siem.example/hook \
 
 Delivery is **best-effort by design**: a dead SIEM endpoint can neither silence the monitor nor fail a consistent log — the exit code is always the detection result.
 
+### Production rollout — onboarding a running pilot safely
+
+0.5–0.7 are opt-in and additive: a live 0.2–0.4 pilot (one key, TOFU) can adopt root-anchoring **without re-signing or re-anchoring** anything. `axr-rollout.js` makes that safe.
+
+```bash
+# 1. bootstrap a trust root from the key ALREADY signing your log (genesis = current signer)
+node axr-rollout.js bootstrap --log-id axr:agent:v1 --sth-pub op-pub.pem \
+  --root-priv root-priv.pem --out trust-root.json
+
+# 2. GO / NO-GO readiness check BEFORE flipping the switch
+node axr-rollout.js preflight receipts.jsonl sth.jsonl anchors.jsonl \
+  --trust-root trust-root.json --key op-pub.pem
+```
+
+The governing risk is **self-lockout** — a genesis key that does not match the actual signer makes every consumer reject the log. Preflight's `GENESIS_SIGNS` / `GENESIS_MISMATCH` finding catches exactly that, alongside an invalid trust root, a committing STH with no control log shipped, and warnings for local-only anchoring, no independent monitor, or a degenerate quorum. It also embeds the authoritative `axr-verify.js` verdict. Full migration order and the trap table are in `ROLLOUT.md`.
+
 ### Compliance Report Generator — the auditor's view
 
 An auditor does not read JSONL and Merkle trees at the command line. `axr-report.js` turns a log into a self-contained, human-auditable **HTML** (or JSON) report: log overview, signature & anchoring integrity, the **key-governance timeline** (genesis → successions → revocations, the active key per role, authorized/revoked flags), the control-log commitment summary, privacy/side-effect counts, and an **EU AI Act Art.12 / GDPR control mapping** (drawn from COMPLIANCE.md, with the honest caveats).
@@ -465,6 +481,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-key-succession.js` | **0.5:** succession CLI — `build`, `verify`, `fingerprint`; **0.6:** ceremony (`body`/`sign`/`assemble --verify`), `revoke`, chain-capable anchors |
 | `axr-control.js` | **0.7:** control-log module — `controlRoot` (RFC 6962 over governance records), `verifyControlLog`, `checkSthCommitment`, `checkControlConsistency` (append-only over the control tree) |
 | `axr-report.js` | **Compliance Report Generator** — human-auditable HTML/JSON report from a log: integrity, key-governance timeline, anchoring, EU AI Act Art.12 / GDPR control mapping; the PASS/FAIL banner is the verifier's verdict (a view, not a replacement) |
+| `axr-rollout.js` | **Production rollout tooling** — `bootstrap` (trust root from the keys already in use) + `preflight` (GO/NO-GO readiness that catches self-lockout before going live); runbook in `ROLLOUT.md` |
 | `axr-ocsf.js` | **0.5:** OCSF 1.1.0 Detection Finding mapping for monitor events — deterministic finding uids, fail-closed severity for unknown violation codes |
 | `axr-webhook.js` | **0.5:** generic best-effort webhook delivery (http/https only, retry, never affects detection results) |
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
