@@ -5,7 +5,13 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
-## [Unreleased]
+## [0.7.1] - 2026-06-13
+
+Tooling release on top of 0.7 — two operator-facing tools, **no protocol or
+wire-format change** (the 0.8 number is reserved for the next protocol layer).
+Both were built as separate tracks and adversarially reviewed
+(NEXUS/Meridian); the rollout preflight was hardened to fail closed on
+rotated/partial logs.
 
 ### Added
 

@@ -6,7 +6,7 @@
 
 A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
 
-**Current version:** 0.7.0 (package) — the production pilot writes the frozen **0.2.1 wire format** with hourly anchoring
+**Current version:** 0.7.1 (package) — the production pilot writes the frozen **0.2.1 wire format** with hourly anchoring
 **Status:** Pilot running on one live workflow with **hourly Merkle anchoring and STH key separation in production** since June 2026. Four pre-existing production bugs discovered and fixed because the receipts made them visible — plus two bugs AXR found in itself before they could reach the live log (see below).
 
 ### Maturity by layer
