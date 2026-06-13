@@ -142,8 +142,9 @@ anchoring fixes the digest format, not the calendar protocol.
 
 Removing a witness is a **slow revoke**: issue a new `witness_set` (control log)
 without that witness, effective from the next `tree_size`. Emergency exclusion
-of a compromised witness without waiting for the next set is **deferred to
-0.9/1.0** — named here so its absence is a decision, not an oversight.
+of a compromised witness without waiting for the next set was deferred here and
+is now delivered in **1.1** as the `witness_revocation` record — see
+`AXR-SPEC-1.1.md`.
 
 ## 7. embedded_succession — deprecated (P3)
 

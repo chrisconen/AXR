@@ -664,21 +664,37 @@ if (sths.length) {
   // --require-witnesses mellett hiba (kulonben megjegyzes az osszegzesben).
   if (trustRoot && controlRecords.length) {
     const wsets = [];
+    const wrevs = [];
     controlRecords.forEach((rec, i) => {
-      if (!rec || rec.record_type !== 'witness_set') return;
-      const v = succ.verifyWitnessSet(rec, trustRoot);
-      if (!v.ok) { problem(`control witness_set[${i + 1}]: NEM verifikal: ${v.problems.join('; ')}`); return; }
-      wsets.push(rec);
+      if (!rec) return;
+      if (rec.record_type === 'witness_set') {
+        const v = succ.verifyWitnessSet(rec, trustRoot);
+        if (!v.ok) { problem(`CONTROL_ROOT_MISMATCH: control witness_set[${i + 1}]: NEM verifikal: ${v.problems.join('; ')}`); return; }
+        // log_id-szuures (a monitorral egyezo trust boundary): idegen loghoz tartozo,
+        // azonos root altal alairt witness_set NEM kerulhet az idovonalba (kulonben
+        // egy alacsonyabb thresholdu idegen keszlet gyengithetne a witness-kaput).
+        if (rec.log_id !== effLogId) { problem(`CONTROL_ROOT_MISMATCH: control witness_set[${i + 1}]: idegen log_id (${rec.log_id})`); return; }
+        wsets.push(rec);
+      } else if (rec.record_type === 'witness_revocation') {
+        // 1.1: witness-revokacio root-verifikalva; az ervenyesek az idovonal-epitobe
+        const v = succ.verifyWitnessRevocation(rec, trustRoot);
+        if (!v.ok) { problem(`CONTROL_ROOT_MISMATCH: control witness_revocation[${i + 1}]: NEM verifikal: ${v.problems.join('; ')}`); return; }
+        if (rec.log_id !== effLogId) { problem(`CONTROL_ROOT_MISMATCH: control witness_revocation[${i + 1}]: idegen log_id (${rec.log_id})`); return; }
+        wrevs.push(rec);
+      }
     });
-    if (wsets.length) {
-      const wtl = succ.buildWitnessTimeline(wsets, trustRoot);
+    if (wsets.length || wrevs.length) {
+      const wtl = succ.buildWitnessTimeline(wsets, trustRoot, wrevs);
       // ambiguous witness-policy fail-closed (Meridian-review), nem csendes kihagyas
       for (const p of wtl.problems) problem(`WITNESS_SET_AMBIGUOUS: ${p}`);
       for (const sth of sorted) {
         const we = succ.witnessAt(wtl.timeline, sth.tree_size);
         if (!we) continue;
-        const wr = succ.verifyWitnessCosignatures(sth, we);
+        // 1.1: az adott tree_size-nal mar revokalt witnessek kiszurese
+        const revoked = succ.revokedWitnessesAt(wtl.revocations, sth.tree_size);
+        const wr = succ.verifyWitnessCosignatures(sth, we, revoked);
         for (const a of wr.anomalies) problem(`WITNESS_COSIGNATURE_INVALID: STH (tree_size=${sth.tree_size}): ${a}`);
+        for (const fp of wr.revoked) problem(`WITNESS_REVOKED: STH (tree_size=${sth.tree_size}): revokalt witness cosignature-je (${fp.slice(0, 20)}...)`);
         if (wr.validCount < wr.threshold) {
           const m = `STH (tree_size=${sth.tree_size}): ${wr.validCount}/${wr.threshold} witness-cosignature`;
           if (ARGS.requireWitnesses) problem(`UNDER_WITNESSED: ${m} - a kuszob alatt (--require-witnesses)`);

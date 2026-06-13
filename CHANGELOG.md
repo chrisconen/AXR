@@ -5,6 +5,56 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.1.0] - 2026-06-13
+
+Emergency witness-revocation — additive over the frozen 1.0 contract (one new
+control-log record type + one new violation code; no wire-format,
+canonicalization, or CLI-exit-code change). A log with no `witness_revocation`
+record verifies exactly as at 1.0. Spec: `AXR-SPEC-1.1.md`. Meridian + NEXUS
+cross-review.
+
+### Added
+
+- **`witness_revocation` control-log record** (`axr-succession.js`:
+  `buildWitnessRevocation` / `buildWitnessRevocationBody` /
+  `buildQuorumWitnessRevocation` / `verifyWitnessRevocation`): a quorum/root-signed
+  record that invalidates one witness fingerprint from a `revoked_at_tree_size`
+  boundary — the structural mirror of the 0.6 `key_revocation`, for the 0.8
+  witness circle. Closes the 0.8 §6 "emergency witness exclusion" deferral.
+- **Two-tier semantics**, simpler than key-revocation: for an STH at `tree_size`
+  T and a witness revoked at R, T < R → the cosignature still counts; T ≥ R →
+  it does not count, and its presence on the STH raises **`WITNESS_REVOKED`**
+  (always a violation; Critical in the OCSF mapping). `tree_size` is the
+  unambiguous clock, so there is no "no-evidence" middle tier. The threshold is
+  unchanged: a revocation that drops valid cosignatures below it surfaces as
+  `UNDER_WITNESSED` (fail-closed, not a silent lowering of the bar).
+- **Consumers**: monitor, JS verifier, and Python verifier (`axr_verify.py`)
+  fold root-verified `witness_revocation` records into the witness timeline and
+  apply the rule per STH; a forged/altered revocation in the control log is
+  `CONTROL_ROOT_MISMATCH` (fail-closed, never anchored). `axr-control.js` accepts
+  `witness_revocation` as a known control type; `axr-ocsf.js` maps
+  `WITNESS_REVOKED` (severity 5).
+- **CLI** (`axr-key-succession.js`): `revoke-witness` (single-key) and
+  `body witness-revocation` (quorum ceremony), with `verify` / `assemble --verify`
+  dispatch and self-verification before output.
+- **Tests** (`axr-witness-revocation-test.js`, 34 assertions incl. Python
+  cross-impl): record build/verify (single + quorum + tamper + foreign root),
+  timeline + two-tier rule, monitor + both verifiers end-to-end, red-team forged
+  revocation → `CONTROL_ROOT_MISMATCH`, foreign-`log_id` governance →
+  `CONTROL_ROOT_MISMATCH`, multi-witness simultaneous revocation, and
+  backward-compat (no revocation → unchanged).
+
+### Review fixes (Meridian + NEXUS cross-review, both GO, no blocker)
+
+- The offline JS/Python verifier now emits `CONTROL_ROOT_MISMATCH` (matching the
+  monitor and the spec) when a `witness_set`/`witness_revocation` fails root
+  verification, instead of a generic message — so code-based alerting agrees
+  across all three consumers.
+- The offline verifier now **filters witness governance by `log_id`** (as the
+  monitor already did): a same-root-signed but foreign-log `witness_set`/
+  `witness_revocation` is rejected `CONTROL_ROOT_MISMATCH` and cannot enter the
+  witness timeline (closes a threshold-weakening trust-boundary gap).
+
 ## [1.0.2] - 2026-06-13
 
 Additive tooling/robustness on top of the frozen 1.0 contract (no protocol,

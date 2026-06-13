@@ -38,7 +38,8 @@ const CONTROL_VERSION = '0.7';
 // felvetele itt tortenik, a fogyasztoi verifikaciojaval egyutt - igy egy regi
 // fogyasztó sosem fogad el vakon olyan governance-rekordot, amit nem ert.
 // 0.8: witness_set (a witness-kor + threshold deklaracioja, root/kvorum-alairt).
-const CONTROL_RECORD_TYPES = ['key_succession', 'key_revocation', 'witness_set'];
+// 1.1: witness_revocation (egy witness-kulcs azonnali ervenytelenitese).
+const CONTROL_RECORD_TYPES = ['key_succession', 'key_revocation', 'witness_set', 'witness_revocation'];
 
 // A control-fa Merkle-gyokere egy control-rekord tomb felett (RFC 6962, a
 // receipt-fevel azonos gepezet). Ures tomb -> az ures fa gyokere.
@@ -63,6 +64,7 @@ function verifyControlRecord(rec, rootAnchor, expectedLogId) {
   if (anchor == null) return { ok: false, problems: problems.concat(['ervenytelen/feloldhatatlan root-horgony']) };
   const v = rec.record_type === 'key_revocation' ? succ.verifyKeyRevocation(rec, anchor)
     : rec.record_type === 'witness_set' ? succ.verifyWitnessSet(rec, anchor)
+    : rec.record_type === 'witness_revocation' ? succ.verifyWitnessRevocation(rec, anchor)
     : succ.verifyKeySuccession(rec, anchor);
   if (!v.ok) problems.push.apply(problems, v.problems);
   return { ok: problems.length === 0, problems };

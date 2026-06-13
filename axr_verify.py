@@ -611,7 +611,37 @@ def verify_witness_set(rec, root_anchor):
                           canonicalize(body).encode("utf-8"), raw)
 
 
-def build_witness_timeline(witness_sets, root_anchor, problems):
+def verify_witness_revocation(rec, root_anchor):
+    # 1.1: witness_revocation ellenorzese (tukor a JS verifyWitnessRevocation-hoz).
+    if not isinstance(rec, dict) or rec.get("record_type") != "witness_revocation":
+        return False
+    if not rec.get("log_id") or not rec.get("revoked_fingerprint"):
+        return False
+    rat = rec.get("revoked_at_tree_size")
+    if not isinstance(rat, int) or isinstance(rat, bool) or rat < 1:
+        return False
+    if isinstance(root_anchor, dict):
+        mode = trust_root_mode(root_anchor)
+        if mode is None:
+            return False
+        if mode[0] == "quorum":
+            return verify_quorum_signed(rec, mode[1], mode[2])
+        raw = pubkey_from_pem(mode[1][0])
+    else:
+        raw = root_anchor
+    if not rec.get("signature"):
+        return False
+    body = {k: v for k, v in rec.items() if k != "signature"}
+    return ed25519_verify(base64.b64decode(rec["signature"]),
+                          canonicalize(body).encode("utf-8"), raw)
+
+
+def revoked_witnesses_at(rev_list, tree_size):
+    # 1.1: a tree_size-nal mar revokalt witness-fingerprintek halmaza.
+    return set(r["fp"] for r in (rev_list or []) if r["from"] <= tree_size)
+
+
+def build_witness_timeline(witness_sets, root_anchor, problems, revocations=None):
     valid = []
     seen = set()
     for w in (witness_sets or []):
@@ -642,7 +672,19 @@ def build_witness_timeline(witness_sets, root_anchor, problems):
                          "witnesses": [{"fp": key_fingerprint(x["public_key"]),
                                         "raw": pubkey_from_pem(x["public_key"])} for x in w["witnesses"]]})
         i += 1
-    return timeline
+    # 1.1: witness_revocation rekordok (a legkorabbi hatar nyer fingerprintenkent)
+    rev_map = {}
+    for r in (revocations or []):
+        if not isinstance(r, dict) or r.get("record_type") != "witness_revocation":
+            continue
+        if not verify_witness_revocation(r, root_anchor):
+            problems.append("elvetett witness_revocation (fingerprint=%s)" % str(r.get("revoked_fingerprint"))[:20])
+            continue
+        fp = r["revoked_fingerprint"]
+        if fp not in rev_map or r["revoked_at_tree_size"] < rev_map[fp]:
+            rev_map[fp] = r["revoked_at_tree_size"]
+    rev_list = [{"fp": fp, "from": frm} for fp, frm in rev_map.items()]
+    return (timeline, rev_list)
 
 
 def witness_at(timeline, tree_size):
@@ -655,11 +697,16 @@ def witness_at(timeline, tree_size):
     return chosen
 
 
-def verify_witness_cosignatures(sth, entry):
-    # -> (valid_count, threshold, anomalies). Tukor a JS verifyWitnessCosignatures.
+def verify_witness_cosignatures(sth, entry, revoked=None):
+    # -> (valid_count, threshold, anomalies, revoked_hits). Tukor a JS-hez.
+    # 1.1: a `revoked` (fingerprint-halmaz) az adott tree_size-nal mar revokalt
+    # witnesseket jeloli - a cosignature-juk nem szamit, es a fingerprintjuk a
+    # revoked_hits-be kerul (WITNESS_REVOKED a fogyasztonal).
     anomalies = []
+    revoked_hits = []
+    revoked = revoked or set()
     if not entry:
-        return (0, 0, anomalies)
+        return (0, 0, anomalies, revoked_hits)
     by_fp = {w["fp"]: w["raw"] for w in entry["witnesses"]}
     body = {k: v for k, v in sth.items() if k != "witness_cosignatures"}
     msg = canonicalize(body).encode("utf-8")
@@ -675,6 +722,9 @@ def verify_witness_cosignatures(sth, entry):
         if prev is not None and not (fp > prev):
             anomalies.append("nem-determinisztikus cosignature-sorrend")
         prev = fp
+        if fp in revoked:
+            revoked_hits.append(fp)
+            continue
         raw = by_fp.get(fp)
         if raw is None:
             anomalies.append("nem-deklaralt witness")
@@ -683,7 +733,7 @@ def verify_witness_cosignatures(sth, entry):
             valid += 1
         else:
             anomalies.append("ERVENYTELEN cosignature")
-    return (valid, entry["threshold"], anomalies)
+    return (valid, entry["threshold"], anomalies, revoked_hits)
 
 
 def build_key_timeline(genesis_pem, successions, role, root_pub_raw, problems, revocations=None):
@@ -972,23 +1022,46 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
 
         # 17. (0.8) witness-cosignature ellenorzes (tukor a JS verifier 17-hez)
         if trust_root is not None and control_records:
+            # eff_log: a monitorral egyezo trust boundary - witness governance
+            # csak az adott loghoz (idegen log_id -> CONTROL_ROOT_MISMATCH).
+            eff_log_w = log_id or (ordered[0].get("log_id") if ordered else None)
+            if not eff_log_w and len(trust_root.get("logs") or []) == 1:
+                eff_log_w = trust_root["logs"][0].get("log_id")
             wsets = []
+            wrevs = []
             for i, rec in enumerate(control_records):
-                if not isinstance(rec, dict) or rec.get("record_type") != "witness_set":
+                if not isinstance(rec, dict):
                     continue
-                if not verify_witness_set(rec, trust_root):
-                    P("control witness_set[%d]: NEM verifikal" % (i + 1))
-                    continue
-                wsets.append(rec)
-            if wsets:
-                wtl = build_witness_timeline(wsets, trust_root, problems)
+                rt = rec.get("record_type")
+                if rt == "witness_set":
+                    if not verify_witness_set(rec, trust_root):
+                        P("CONTROL_ROOT_MISMATCH: control witness_set[%d]: NEM verifikal" % (i + 1))
+                        continue
+                    if rec.get("log_id") != eff_log_w:
+                        P("CONTROL_ROOT_MISMATCH: control witness_set[%d]: idegen log_id (%s)" % (i + 1, rec.get("log_id")))
+                        continue
+                    wsets.append(rec)
+                elif rt == "witness_revocation":
+                    if not verify_witness_revocation(rec, trust_root):
+                        P("CONTROL_ROOT_MISMATCH: control witness_revocation[%d]: NEM verifikal" % (i + 1))
+                        continue
+                    if rec.get("log_id") != eff_log_w:
+                        P("CONTROL_ROOT_MISMATCH: control witness_revocation[%d]: idegen log_id (%s)" % (i + 1, rec.get("log_id")))
+                        continue
+                    wrevs.append(rec)
+            if wsets or wrevs:
+                wtl, rev_list = build_witness_timeline(wsets, trust_root, problems, wrevs)
                 for s in ordered:
                     we = witness_at(wtl, s.get("tree_size", 0))
                     if not we:
                         continue
-                    vc, thr, anomalies = verify_witness_cosignatures(s, we)
+                    revoked = revoked_witnesses_at(rev_list, s.get("tree_size", 0))
+                    vc, thr, anomalies, rev_hits = verify_witness_cosignatures(s, we, revoked)
                     for a in anomalies:
                         P("WITNESS_COSIGNATURE_INVALID: STH (tree_size=%s): %s" % (s.get("tree_size"), a))
+                    for fp in rev_hits:
+                        P("WITNESS_REVOKED: STH (tree_size=%s): revokalt witness cosignature-je (%s...)"
+                          % (s.get("tree_size"), fp[:20]))
                     if vc < thr and require_witnesses:
                         P("UNDER_WITNESSED: STH (tree_size=%s): %d/%d witness-cosignature (--require-witnesses)"
                           % (s.get("tree_size"), vc, thr))

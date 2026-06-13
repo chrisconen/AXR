@@ -156,6 +156,20 @@ if (cmd === 'verify') {
     process.exit(1);
   }
 
+  if (record.record_type === 'witness_revocation') {
+    const res = succ.verifyWitnessRevocation(record, anchor);
+    if (res.ok) {
+      console.log('Witness revocation ERVENYES (root-alairt).');
+      console.log('  log_id:     ' + record.log_id);
+      console.log('  revoked:    ' + record.revoked_fingerprint);
+      console.log('  revoked_at: tree_size >= ' + record.revoked_at_tree_size);
+      console.log('  reason:     ' + record.reason + '  (issued_at: ' + record.issued_at + ')');
+      process.exit(0);
+    }
+    console.log('Witness revocation ERVENYTELEN: ' + res.problems.join('; '));
+    process.exit(1);
+  }
+
   const res = succ.verifyKeySuccession(record, anchor);
   if (res.ok) {
     console.log('Key succession ERVENYES (root-alairt).');
@@ -216,6 +230,43 @@ if (cmd === 'revoke') {
   process.exit(0);
 }
 
+// ── revoke-witness (1.1, egykulcsos build) ─────────────────────────────────────
+// Egy witness-kulcs azonnali ervenytelenitese egy tree_size hatartol. Kvorumhoz
+// a body witness-revocation / sign / assemble ceremonia valo. A control logba a
+// 'control add' fuzi (commit elotti verify-jal).
+if (cmd === 'revoke-witness') {
+  const positional = [];
+  const flags = {};
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+    else positional.push(rest[i]);
+  }
+  const [rootPrivPath] = positional;
+  const usage = 'Hasznalat: node axr-key-succession.js revoke-witness <root-priv.pem> ' +
+    '--log-id <id> (--revoked <witness-pub.pem> | --revoked-fingerprint sha256:<hex>) ' +
+    '--revoked-at <tree_size> [--reason szoveg]';
+  if (!rootPrivPath || !flags['log-id'] || !flags['revoked-at']) die(usage);
+  if (!flags.revoked && !flags['revoked-fingerprint']) die(usage);
+  const rootPriv = readFileOrDie(rootPrivPath, 'root privat kulcs');
+  const revokedFp = flags['revoked-fingerprint'] ||
+    succ.keyFingerprint(readFileOrDie(flags.revoked, 'revokalando witness publikus kulcs'));
+  let record;
+  try {
+    record = succ.buildWitnessRevocation({
+      log_id: flags['log-id'],
+      revoked_fingerprint: revokedFp,
+      revoked_at_tree_size: Number(flags['revoked-at']),
+      reason: flags.reason
+    }, rootPriv);
+  } catch (e) { die('HIBA: ' + e.message); }
+  const rootPub = crypto.createPublicKey(crypto.createPrivateKey(rootPriv))
+    .export({ type: 'spki', format: 'pem' });
+  const chk = succ.verifyWitnessRevocation(record, rootPub);
+  if (!chk.ok) die('HIBA: a felepitett witness-revokacio nem verifikal: ' + chk.problems.join('; '), 1);
+  process.stdout.write(JSON.stringify(record) + '\n');
+  process.exit(0);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Kvorum-ceremonia: body -> sign (alaironkent, kulon gepeken) -> assemble
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -269,6 +320,24 @@ if (cmd === 'body') {
     process.stdout.write(JSON.stringify(body) + '\n');
     process.exit(0);
   }
+  if (kind === 'witness-revocation') {
+    const usage = 'Hasznalat: node axr-key-succession.js body witness-revocation --log-id <id> ' +
+      '(--revoked <witness-pub.pem> | --revoked-fingerprint sha256:<hex>) --revoked-at <tree_size> [--reason szoveg]';
+    if (!flags['log-id'] || !flags['revoked-at']) die(usage);
+    if (!flags.revoked && !flags['revoked-fingerprint']) die(usage);
+    let body;
+    try {
+      body = succ.buildWitnessRevocationBody({
+        log_id: flags['log-id'],
+        revoked_fingerprint: flags['revoked-fingerprint'] ||
+          succ.keyFingerprint(readFileOrDie(flags.revoked, 'revokalando witness publikus kulcs')),
+        revoked_at_tree_size: Number(flags['revoked-at']),
+        reason: flags.reason
+      });
+    } catch (e) { die('HIBA: ' + e.message); }
+    process.stdout.write(JSON.stringify(body) + '\n');
+    process.exit(0);
+  }
   if (kind === 'root-successor') {
     // utod trust-root torzse: az elod fajl lehet rekord vagy lanc (az utolso
     // elem az elod); a leiro JSON: { providers, logs, root_keys | root_public_key, threshold }
@@ -293,7 +362,7 @@ if (cmd === 'body') {
     process.stdout.write(JSON.stringify(body) + '\n');
     process.exit(0);
   }
-  die('Hasznalat: node axr-key-succession.js body <succession|revocation|root-successor> ...');
+  die('Hasznalat: node axr-key-succession.js body <succession|revocation|witness-revocation|root-successor> ...');
 }
 
 // ── sign: egy alairo reszalairasa egy body folott ──────────────────────────────
@@ -340,9 +409,13 @@ if (cmd === 'assemble') {
     const anchor = loadAnchorOrDie(flags.verify);
     const res = record.record_type === 'key_revocation'
       ? succ.verifyKeyRevocation(record, anchor)
-      : record.record_type === 'key_succession'
-        ? succ.verifyKeySuccession(record, anchor)
-        : { ok: false, problems: ['assemble --verify: ismeretlen record_type: ' + record.record_type] };
+      : record.record_type === 'witness_revocation'
+        ? succ.verifyWitnessRevocation(record, anchor)
+        : record.record_type === 'witness_set'
+          ? succ.verifyWitnessSet(record, anchor)
+          : record.record_type === 'key_succession'
+            ? succ.verifyKeySuccession(record, anchor)
+            : { ok: false, problems: ['assemble --verify: ismeretlen record_type: ' + record.record_type] };
     if (!res.ok) die('HIBA: az osszefesult rekord NEM verifikal: ' + res.problems.join('; '), 1);
     console.error('assemble: a rekord a megadott horgonnyal ERVENYES (' + record.signatures.length + ' alairas).');
   } else {

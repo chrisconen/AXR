@@ -554,13 +554,108 @@ function verifyWitnessSet(rec, rootAnchor) {
   return { ok: problems.length === 0, problems };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 1.1 - Emergency witness-revokacio (egy witness-kulcs azonnali ervenytelenitese)
+// ═══════════════════════════════════════════════════════════════════════════════
+// A "lassu" witness-csere egy UJ witness_set kibocsatasa egy jovobeli hatartol
+// (effective_from_tree_size) - de a regi witness addig szamit. Ha egy witness
+// kulcsa KOMPROMITALODIK (split-view-t cosignol, ellopjak), a cosignature-jeit
+// AZONNAL ervenyteleniteni kell, akar visszamenoleg egy tree_size-tol.
+//
+// A witness_revocation a key_revocation tukre: kvorum/root-alairt, a control
+// logban terjed (mint a witness_set), es egy KONKRET witness-fingerprintet
+// ervenytelenit egy revoked_at_tree_size hatartol. A szabaly EGYSZERUBB, mint a
+// kulcs-revokacioe: az STH-knal a tree_size az EGYERTELMU ora (a witness-reteg
+// mar igy is azt hasznalja), ezert nincs "anchor-bizonyitek nelkul fail-closed"
+// koztes szint - 2-szintu: tree_size < revoked_at -> a cosignature szamit;
+// tree_size >= revoked_at -> a revokalt witness cosignature-je NEM szamit, es
+// ha megis ott van az STH-n, az WITNESS_REVOKED (violation, mint a KEY_REVOKED).
+// A threshold NEM csokken: ha a revokacio a kuszob ala viszi az ervenyes
+// witnesseket, az UNDER_WITNESSED, amig egy uj witness_set nem potolja oket.
+
+const WITNESS_REVOCATION_VERSION = '1.1';
+
+function buildWitnessRevocationBody(opts, now) {
+  if (!opts.log_id) throw new Error('witness_revocation: log_id kotelezo');
+  if (!opts.revoked_fingerprint) throw new Error('witness_revocation: revoked_fingerprint kotelezo');
+  if (!Number.isInteger(opts.revoked_at_tree_size) || opts.revoked_at_tree_size < 1)
+    throw new Error('witness_revocation: revoked_at_tree_size pozitiv egesz kell legyen');
+  return {
+    axr_version: WITNESS_REVOCATION_VERSION,
+    record_type: 'witness_revocation',
+    log_id: opts.log_id,
+    revoked_fingerprint: opts.revoked_fingerprint,
+    revoked_at_tree_size: opts.revoked_at_tree_size,
+    reason: opts.reason || 'unspecified',
+    issued_at: (now || (() => new Date().toISOString()))()
+  };
+}
+function buildWitnessRevocation(opts, rootPrivPem, now) {
+  const body = buildWitnessRevocationBody(opts, now);
+  const sig = crypto.sign(null, Buffer.from(core.canonicalize(body), 'utf8'),
+    crypto.createPrivateKey(rootPrivPem)).toString('base64');
+  return { ...body, signature: sig };
+}
+function buildQuorumWitnessRevocation(opts, signerPrivPems, now) {
+  const body = buildWitnessRevocationBody(opts, now);
+  return assembleQuorum(body, (signerPrivPems || []).map(p => signQuorumPart(body, p)));
+}
+
+// witness_revocation ellenorzese a root-horgonnyal (PEM | trust-root). A
+// verifyWitnessSet / verifyKeyRevocation szerkezeti tukre. -> { ok, problems }
+function verifyWitnessRevocation(rec, rootAnchor) {
+  const problems = [];
+  if (!rec || typeof rec !== 'object') return { ok: false, problems: ['nem objektum'] };
+  if (rec.record_type !== 'witness_revocation') problems.push('record_type != witness_revocation');
+  if (!rec.log_id) problems.push('hianyzo log_id');
+  if (!rec.revoked_fingerprint) problems.push('hianyzo revoked_fingerprint');
+  if (!Number.isInteger(rec.revoked_at_tree_size) || rec.revoked_at_tree_size < 1)
+    problems.push('ervenytelen revoked_at_tree_size');
+  if (problems.length) return { ok: false, problems };
+
+  let mode = null;
+  if (typeof rootAnchor === 'string') mode = { mode: 'single', keys: [rootAnchor], threshold: 1 };
+  else if (rootAnchor && rootAnchor.record_type === 'trust_root') {
+    mode = trustRootMode(rootAnchor);
+    if (mode.mode === 'invalid') return { ok: false, problems: mode.problems };
+  } else return { ok: false, problems: ['ervenytelen root-horgony'] };
+
+  if (mode.mode === 'quorum') {
+    const q = verifyQuorumSigned(rec, mode.keys, mode.threshold);
+    return { ok: q.ok, problems: q.problems };
+  }
+  if (!rec.signature) return { ok: false, problems: ['hianyzo signature'] };
+  const body = { ...rec }; delete body.signature;
+  try {
+    const ok = crypto.verify(null, Buffer.from(core.canonicalize(body), 'utf8'),
+      crypto.createPublicKey(mode.keys[0]), Buffer.from(rec.signature, 'base64'));
+    if (!ok) problems.push('a witness_revocation alairasa ERVENYTELEN a root-kulcsra');
+  } catch (e) { problems.push('witness_revocation alairas-ellenorzes hiba: ' + e.message); }
+  return { ok: problems.length === 0, problems };
+}
+
+// A revokalt witness-fingerprintek halmaza egy adott tree_size-nal a
+// buildWitnessTimeline {fingerprint, from_tree_size} kimenete alapjan: minden
+// olyan bejegyzes, aminek a from_tree_size-a <= treeSize. -> Set<fingerprint>
+function revokedWitnessesAt(revocations, treeSize) {
+  const set = new Set();
+  for (const r of (revocations || []))
+    if (r && r.from_tree_size <= treeSize) set.add(r.fingerprint);
+  return set;
+}
+
 // Witness-idovonal a (root-verifikalt) witness_set rekordokbol. A witness_set
 // rekordok ABSZOLUT policy-deklaraciok (nincs predecessor-lancolas, mint a
 // successionnel): minden root-autorizalt. Az adott tree_size-nal a legkesobbi
 // effective_from <= tree_size az aktiv. Azonos effective_from-ra ket eltero
 // keszlet = ambiguitas -> fail-closed (a hatar konfliktusos, nem valasztunk).
-//   -> { timeline: [{ from_tree_size, witnesses:[{name,fingerprint,pem}], threshold }], problems }
-function buildWitnessTimeline(witnessSets, rootAnchor) {
+//
+// 1.1: a root-verifikalt witness_revocation rekordok is bejonnek (opcionalis 3.
+// parameter); a visszaadott `revocations` lista {fingerprint, from_tree_size}
+// alakban a fogyasztoknal a revokalt witnessek kiszuresehez (revokedWitnessesAt).
+//   -> { timeline: [{ from_tree_size, witnesses:[{name,fingerprint,pem}], threshold }],
+//        revocations: [{ fingerprint, from_tree_size }], problems }
+function buildWitnessTimeline(witnessSets, rootAnchor, revocations) {
   const problems = [];
   const valid = [];
   const seen = new Set();
@@ -592,7 +687,18 @@ function buildWitnessTimeline(witnessSets, rootAnchor) {
       witnesses: w.witnesses.map(x => ({ name: x.name, pem: x.public_key, fingerprint: keyFingerprint(x.public_key) }))
     });
   }
-  return { timeline, problems };
+  // 1.1: root-verifikalt witness_revocation rekordok feldolgozasa. A legkorabbi
+  // hatar nyer fingerprintenkent (mint a kulcs-revokacional a revoked_from).
+  const revMap = new Map();
+  for (const r of (revocations || [])) {
+    if (!r || r.record_type !== 'witness_revocation') continue;
+    const v = verifyWitnessRevocation(r, rootAnchor);
+    if (!v.ok) { problems.push('elvetett witness_revocation (fingerprint=' + (r && String(r.revoked_fingerprint).slice(0, 20)) + '...): ' + v.problems.join('; ')); continue; }
+    const prev = revMap.get(r.revoked_fingerprint);
+    if (prev == null || r.revoked_at_tree_size < prev) revMap.set(r.revoked_fingerprint, r.revoked_at_tree_size);
+  }
+  const revocationsOut = [...revMap.entries()].map(([fingerprint, from_tree_size]) => ({ fingerprint, from_tree_size }));
+  return { timeline, revocations: revocationsOut, problems };
 }
 
 function witnessAt(timeline, treeSize) {
@@ -623,12 +729,21 @@ function assembleWitnessCosignatures(sth, parts) {
 // Egy STH witness-cosignature-einek ellenorzese az adott (aktiv) witness-keszlet
 // ellen. SZIGORU fail-closed az ANOMALIAKRA (nem-deklaralt/duplikalt/rendezetlen/
 // ervenytelen alairas); a threshold ALATTISAG NEM anomalia, hanem kulon jelzes
-// (UNDER_WITNESSED a fogyasztoknal). -> { validCount, threshold, anomalies: [] }
-function verifyWitnessCosignatures(sth, witnessEntry) {
+// (UNDER_WITNESSED a fogyasztoknal).
+//
+// 1.1: a `revoked` (opcionalis Set<fingerprint>) az adott tree_size-nal mar
+// revokalt witnesseket jeloli (lasd revokedWitnessesAt). Egy revokalt witness
+// cosignature-je NEM szamit a validCount-ba; ha megis ott van az STH-n, a
+// fingerprintje a visszaadott `revoked` listaba kerul (a fogyaszto WITNESS_REVOKED
+// violationt emittal ra). A threshold valtozatlan marad.
+//   -> { validCount, threshold, anomalies: [], revoked: [] }
+function verifyWitnessCosignatures(sth, witnessEntry, revoked) {
   const anomalies = [];
+  const revokedHit = [];
+  const revokedSet = revoked instanceof Set ? revoked : new Set(revoked || []);
   const threshold = witnessEntry ? witnessEntry.threshold : 0;
   const cosigs = Array.isArray(sth.witness_cosignatures) ? sth.witness_cosignatures : [];
-  if (!witnessEntry) return { validCount: 0, threshold: 0, anomalies };
+  if (!witnessEntry) return { validCount: 0, threshold: 0, anomalies, revoked: revokedHit };
   const byFp = new Map();
   for (const w of witnessEntry.witnesses) byFp.set(w.fingerprint, w.pem);
   const body = { ...sth }; delete body.witness_cosignatures;
@@ -639,6 +754,8 @@ function verifyWitnessCosignatures(sth, witnessEntry) {
     if (prevFp !== null && !(part.witness_fingerprint > prevFp))
       anomalies.push('nem-determinisztikus cosignature-sorrend: ' + part.witness_fingerprint.slice(0, 20) + '...');
     prevFp = part.witness_fingerprint;
+    // 1.1: revokalt witness - a cosignature-je nem szamit, es jelezzuk (WITNESS_REVOKED)
+    if (revokedSet.has(part.witness_fingerprint)) { revokedHit.push(part.witness_fingerprint); continue; }
     const pem = byFp.get(part.witness_fingerprint);
     if (!pem) { anomalies.push('nem-deklaralt witness: ' + part.witness_fingerprint.slice(0, 20) + '...'); continue; }
     try {
@@ -646,7 +763,7 @@ function verifyWitnessCosignatures(sth, witnessEntry) {
       else anomalies.push('ERVENYTELEN cosignature: ' + part.witness_fingerprint.slice(0, 20) + '...');
     } catch (e) { anomalies.push('cosignature-ellenorzes hiba: ' + e.message); }
   }
-  return { validCount: valid, threshold, anomalies };
+  return { validCount: valid, threshold, anomalies, revoked: revokedHit };
 }
 
 // ── Kulcs-idovonal epitese genesisbol + successionokbol ───────────────────────
@@ -801,5 +918,11 @@ module.exports = {
   witnessAt,
   cosignWitness,
   assembleWitnessCosignatures,
-  verifyWitnessCosignatures
+  verifyWitnessCosignatures,
+  WITNESS_REVOCATION_VERSION,
+  buildWitnessRevocation,
+  buildWitnessRevocationBody,
+  buildQuorumWitnessRevocation,
+  verifyWitnessRevocation,
+  revokedWitnessesAt
 };

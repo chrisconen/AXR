@@ -160,6 +160,7 @@ function pollMonitor(opts) {
   const currentMax = sths[sths.length - 1].tree_size;
   let timeline = null;
   let witnessTimeline = null;  // 0.8: witness-idovonal a control logbeli witness_set-ekbol
+  let witnessRevList = [];     // 1.1: {fingerprint, from_tree_size} a witness_revocation-okbol
   if (trustRootRecords) {
     // 0.6: lanc-feloldas - a fej onmagaban ervenyes genesis, minden utodot az
     // ELOD kvoruma autorizal; az effektiv root a lanc vege. Egyrekordos
@@ -247,6 +248,7 @@ function pollMonitor(opts) {
     // es withholding-ellenorzes lentebb, az STH-k feldolgozasakor.
     const controlRecords = opts.control || [];
     const witnessSets = [];
+    const witnessRevs = [];
     controlRecords.forEach((rec, i) => {
       if (!rec || typeof rec !== 'object') { V('CONTROL_ROOT_MISMATCH', `control[${i}]: nem objektum`); return; }
       if (rec.record_type === 'key_succession') addSucc(rec, `control[${i}]`);
@@ -259,17 +261,26 @@ function pollMonitor(opts) {
         else if (rec.log_id !== effLogId) V('CONTROL_ROOT_MISMATCH', `control[${i}] witness_set: idegen log_id (${rec.log_id})`);
         else witnessSets.push(rec);
       }
+      else if (rec.record_type === 'witness_revocation') {
+        // 1.1: witness-revokacio root-verifikalva; az ervenyesek az idovonal-
+        // epitobe kerulnek (a WITNESS_REVOKED-ellenorzes az STH-knal, lentebb).
+        const v = succ.verifyWitnessRevocation(rec, trustRoot);
+        if (!v.ok) V('CONTROL_ROOT_MISMATCH', `control[${i}] witness_revocation: NEM verifikal: ${v.problems.join('; ')}`);
+        else if (rec.log_id !== effLogId) V('CONTROL_ROOT_MISMATCH', `control[${i}] witness_revocation: idegen log_id (${rec.log_id})`);
+        else witnessRevs.push(rec);
+      }
       else V('CONTROL_ROOT_MISMATCH', `control[${i}]: ismeretlen control record_type (${rec.record_type}) - fail-closed`);
     });
-    // 0.8: witness-idovonal (a threshold-ellenorzes az STH-knal). A pool mar
-    // root-verifikalt; az utkozeseket (azonos effective_from) a builder jelzi.
-    if (witnessSets.length) {
-      const wtl = succ.buildWitnessTimeline(witnessSets, trustRoot);
+    // 0.8/1.1: witness-idovonal + revokaciok (a threshold/WITNESS_REVOKED az
+    // STH-knal). A pool mar root-verifikalt; az utkozeseket a builder jelzi.
+    if (witnessSets.length || witnessRevs.length) {
+      const wtl = succ.buildWitnessTimeline(witnessSets, trustRoot, witnessRevs);
       // Ambiguous policy (azonos effective_from ket eltero keszlettel) FAIL-CLOSED
       // (Meridian-review): nem csendes kihagyas, kulonben ket utkozo witness_set-tel
       // ki lehetne kapcsolni a witness-kaput az adott tartomanyra.
       for (const p of wtl.problems) V('WITNESS_SET_AMBIGUOUS', 'witness-idovonal: ' + p);
       witnessTimeline = wtl.timeline;
+      witnessRevList = wtl.revocations || [];
     }
 
     if (!genesisPem) {
@@ -403,9 +414,14 @@ function pollMonitor(opts) {
     if (witnessTimeline) {
       const we = succ.witnessAt(witnessTimeline, sth.tree_size);
       if (we) {
-        const wr = succ.verifyWitnessCosignatures(sth, we);
+        // 1.1: az adott tree_size-nal mar revokalt witnessek - a cosignature-juk
+        // nem szamit, es ha megis az STH-n van, WITNESS_REVOKED (violation).
+        const revoked = succ.revokedWitnessesAt(witnessRevList, sth.tree_size);
+        const wr = succ.verifyWitnessCosignatures(sth, we, revoked);
         for (const a of wr.anomalies)
           V('WITNESS_COSIGNATURE_INVALID', `STH (tree_size=${sth.tree_size}): ${a}`);
+        for (const fp of wr.revoked)
+          V('WITNESS_REVOKED', `STH (tree_size=${sth.tree_size}): revokalt witness cosignature-je (${fp.slice(0, 20)}...) - nem szamit a kuszobba`);
         if (wr.validCount < wr.threshold) {
           const msg = `STH (tree_size=${sth.tree_size}): ${wr.validCount}/${wr.threshold} witness-cosignature - a kuszob alatt`;
           if (opts.requireWitnesses) V('UNDER_WITNESSED', msg + ' (--require-witnesses: violation)');

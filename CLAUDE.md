@@ -108,8 +108,29 @@ fogyasztókban), AXR-SPEC-1.0.md (réteg/record/kód-regiszter + integritás-pro
 (wire format, canonicalization, CLI exit-kódok, kódnevek) fagyott 1.x-ig; a JS
 modul-export NEM fagyott (1.1-ig). Release: v1.0.0.
 
-Halasztva post-1.0-ra: emergency witness-revokáció, részleges control-disclosure,
-több namespace, fagyott JS SDK-felület, embedded_succession teljes eltávolítása (2.0).
+Halasztva post-1.0-ra: emergency witness-revokáció (lásd 1.1 — KÉSZ),
+részleges control-disclosure, több namespace, fagyott JS SDK-felület,
+embedded_succession teljes eltávolítása (2.0).
+
+## 1.1 — KÉSZ (2026-06-13): emergency witness-revokáció
+
+Additív az 1.0 fagyott szerződésen (egy új control-rekordtípus + egy új
+violation-kód; nincs wire/kanonikalizálás/exit-kód változás; revokáció nélkül a
+log az 1.0-val azonosan verifikál). `witness_revocation` (kvórum/root-aláírt,
+control-logban) egy witness-fingerprintet ervénytelenít egy revoked_at_tree_size
+határtól — a 0.6 key_revocation tükre a 0.8 witness-réteghez. **2-szintű szabály**
+(egyszerűbb, mint a kulcs-revokáció 3-szintűje, mert az STH tree_size az
+egyértelmű óra): T<R számít; T>=R nem, és ha a cosig ott van → `WITNESS_REVOKED`
+(mindig violation). A threshold NEM csökken → UNDER_WITNESSED, amíg új
+witness_set nem pótol. Szállítva: succession-primitívek + revokedWitnessesAt,
+control-típus, monitor + JS/Python verifier (check 17 bővítés), OCSF-kód,
+CLI (`revoke-witness` + `body witness-revocation`), AXR-SPEC-1.1.md, 34-állításos
+teszt. Meridian+NEXUS keresztreview (mindkettő GO): a verifier fail-closed
+útja most `CONTROL_ROOT_MISMATCH` kóddal egyezik a monitorral, és log_id-szűr a
+witness-governance-re (trust boundary). Release: v1.1.0.
+
+Halasztva 1.1-ből: witness-felfüggesztés (auto-expiry), witness self-revokáció,
+recovery teljes lifecycle-e2e (unit + spec fedi).
 
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 
