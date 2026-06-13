@@ -613,6 +613,9 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `AXR-SPEC-0.7.md` | 0.7 specification (control log: STH commitment, append-only governance distribution, withholding/downgrade semantics, identity/epoch) |
 | `AXR-SPEC-0.8.md` | 0.8 specification (witness cosigning: stateful witnesses, witness_set in the control log, cosignature coverage, UNDER_WITNESSED/ambiguous semantics) |
 | `AXR-SPEC-1.0.md` | 1.0 overview + the 1.x contract: layer/record/code registers, the normative integrity profile (N1/N2/N4 + conditional witness preventiveness), and the compatibility policy (what is frozen for 1.x) |
+| `AXR-SPEC-1.x.md` | **Living overview (current map):** supersedes the 1.0 snapshot's registers with 1.1–1.5 — the complete witness lifecycle (revocation 1.1, suspension 1.4), the frozen JS SDK (1.2/1.3), partial control-disclosure (1.5), and the updated 1.x compatibility policy. **Read this first.** |
+| `AXR-SPEC-1.1.md` / `AXR-SPEC-1.4.md` / `AXR-SPEC-1.5.md` | Witness revocation / witness suspension / partial control-disclosure (normative detail) |
+| `AXR-SDK.md` | The frozen `require('axr')` library surface + the 1.x JS stability policy |
 | `axr-compat-matrix-test.js` | **1.0:** cross-version compatibility matrix — opt-out parity, frozen-fixture legacy verify, full 0.8 stack, additivity; the live frozen-wire-format proof |
 | `fixtures/legacy-0.2.jsonl` | **1.0:** byte-frozen 0.2 log (committed, never regenerated) — the regression anchor for the frozen wire format |
 | `SECURITY.md` | Responsible-disclosure policy and supported versions |

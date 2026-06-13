@@ -5,6 +5,18 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.5.1] - 2026-06-13
+
+Documentation consolidation (no code change). Adds **`AXR-SPEC-1.x.md`**, a
+living overview that supersedes the frozen 1.0 snapshot's registers with the
+1.1–1.5 additions: the current layer map, record-type register
+(`witness_revocation`, `witness_suspension`), code register (`WITNESS_REVOKED`,
+`WITNESS_SUSPENDED`), the complete witness lifecycle, the frozen JS SDK
+(1.2/1.3), partial control-disclosure (1.5), and the updated 1.x compatibility
+policy (the JS SDK surface is frozen since 1.2). `AXR-SPEC-1.0.md` gains a
+forward-pointer to it. The per-layer specs remain the normative detail. 41
+suites unchanged/green.
+
 ## [1.5.0] - 2026-06-13
 
 Partial control-disclosure — prove one governance record is committed without

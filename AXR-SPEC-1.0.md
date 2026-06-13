@@ -9,6 +9,12 @@ The layer specifications (`AXR-SPEC-0.2.md` … `AXR-SPEC-0.8.md`) remain the
 **normative** detail for each mechanism. This document is the **overview and the
 1.x contract** — a map, a register, and the guarantees, not a rewrite.
 
+> **Note (post-1.0):** this file is the frozen **1.0 snapshot**. Its registers
+> (§2 record types, §3 codes, §6 compatibility) have since been extended by
+> 1.1–1.5. For the **current** map — the witness lifecycle (revocation 1.1,
+> suspension 1.4), the frozen JS SDK (1.2/1.3), and partial control-disclosure
+> (1.5) — see **`AXR-SPEC-1.x.md`**, the living overview.
+
 ---
 
 ## 1. Layer map

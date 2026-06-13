@@ -190,6 +190,16 @@ cross-impl parity). 26-állításos teszt. 41 suite zöld. Meridian+NEXUS review
 commitment — control_root_hash ÉS control_size — kötése, aláírásilag érvényes
 STH-választás). Release: v1.5.0.
 
+## 1.5.1 — KÉSZ (2026-06-13): dokumentáció-konszolidáció
+
+Csak dokumentáció (nincs kódváltozás). `AXR-SPEC-1.x.md` élő áttekintő, ami
+felülírja a fagyott 1.0 pillanatkép regisztereit az 1.1–1.5 bővítésekkel:
+aktuális réteg-térkép, rekordtípus-regiszter (witness_revocation, witness_suspension),
+kód-regiszter (WITNESS_REVOKED, WITNESS_SUSPENDED), teljes witness-életciklus,
+fagyott JS SDK (1.2/1.3), partial control-disclosure (1.5), frissített 1.x
+kompat-policy (a JS SDK-felület 1.2 óta fagyott). A 1.0-spec forward-pointert kap.
+README + package.json files. 41 suite változatlanul zöld. Release: v1.5.1.
+
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 
 Scope: AXR-0.8-SCOPE.md (Meridian+NEXUS review). Megelőző equivocation-védelem:
