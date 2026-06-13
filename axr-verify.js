@@ -511,9 +511,17 @@ function buildTimelineForRole(role) {
   successionRecords.forEach((rec, i) => add(rec, `successions[${i + 1}. sor]`));
   // 0.7: a control log governance-rekordjai ugyanabba a poolba (dedup)
   controlRecords.forEach((rec, i) => add(rec, `control[${i + 1}. sor]`));
+  // 1.0 EMBEDDED_BYPASS: control log mellett a benne NEM szereplo beagyazott
+  // succession a governance-csatorna megkerulese -> fail-closed (nem a poolba)
+  const ctlHashes = new Set(controlRecords.map(r => sha256(r)));
+  const usingControl = controlRecords.length > 0;
   if (role === 'sth')
     for (const sth of sths)
-      if (sth.embedded_succession) add(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
+      if (sth.embedded_succession) {
+        if (usingControl && !ctlHashes.has(sha256(sth.embedded_succession)))
+          problem(`EMBEDDED_BYPASS: STH (tree_size=${sth.tree_size}): embedded_succession nincs a control logban - a governance-csatorna megkerulese`);
+        else add(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
+      }
   // revokaciok (0.6): root-verifikalt, log-egyezo rekordok a timeline-ra
   const revPool = [];
   const seenRev = new Set();

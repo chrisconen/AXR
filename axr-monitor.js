@@ -207,8 +207,18 @@ function pollMonitor(opts) {
       }
       pool.push(s);
     };
+    // 1.0 EMBEDDED_BYPASS: ha control log van hasznalatban, egy beagyazott
+    // succession, ami NINCS a control logban, a withholding-detektalhato
+    // csatorna megkerulese -> fail-closed (NEM tapaljuk a poolba). Control log
+    // nelkul az embedded marad a 0.5-os withholding-fix csatorna.
+    const controlHashes = new Set((opts.control || []).map(r => axr.sha256(r)));
+    const usingControl = (opts.control || []).length > 0;
     for (const sth of sths)
-      if (sth.embedded_succession) addSucc(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
+      if (sth.embedded_succession) {
+        if (usingControl && !controlHashes.has(axr.sha256(sth.embedded_succession)))
+          V('EMBEDDED_BYPASS', `STH (tree_size=${sth.tree_size}): embedded_succession NINCS a control logban - a governance-csatorna megkerulese (1.0 fail-closed)`);
+        else addSucc(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
+      }
     for (const s of (opts.successions || [])) addSucc(s, 'kulso succession');
 
     // 0.6: revokaciok (out-of-band, --revocations). Ervenytelen/jogosulatlan

@@ -255,15 +255,19 @@ async function runAnchor(opts) {
     if (leaves.length < sc.effective_from_tree_size)
       throw new Error('succession: a fa-meret (' + leaves.length + ') az effective_from_tree_size (' +
         sc.effective_from_tree_size + ') hatara elott van - az utod meg nem irhat ala');
+    // 1.0 GOVERNANCE CLEANUP: ha a hivo control logot is hasznal, az
+    // embedded_succession ERVENYTELEN ut - a fogyasztok EMBEDDED_BYPASS-kent
+    // utasitanak el egy control logban NEM szereplo beagyazott rekordot. Ezert
+    // a sidecar itt FAIL-FAST dob (self-lockout-megelozes), a key_succession-t
+    // a control logba kell tenni (axr-key-succession control add). A standalone
+    // --succession (control NELKUL, tiszta 0.5-mod) tovabbra is mukodik.
+    if (opts.controlPath)
+      throw new Error('succession: control log mellett az embedded_succession ervenytelen (1.0 governance cleanup) - tedd a key_succession-t a control logba: axr-key-succession control add. Migracio: lasd AXR-SPEC-1.0.md.');
     const already = sths.some(t => t.embedded_succession &&
       t.embedded_succession.successor_fingerprint === sc.successor_fingerprint);
     if (!already) embedSuccession = sc;
-    // 0.8 DEPRECATION: a control log (0.7) az elsodleges governance-csatorna.
-    // Az embedded_succession atmeneti; ha a hivo control logot is hasznal,
-    // jelezzuk, hogy a successiont inkabb a control logba tegye. Eltavolitasi
-    // horizont: 1.0 (lasd AXR-SPEC-0.8 par. P3).
-    if (embedSuccession && opts.controlPath)
-      console.error('FIGYELEM (deprecated): az embedded_succession atmeneti - control log mellett a key_succession-t a control logba (witness_set/key_succession csatorna) erdemes tenni. Eltavolitas: 1.0.');
+    if (embedSuccession)
+      console.error('FIGYELEM (deprecated): az embedded_succession atmeneti (0.5) - a governance elsodleges csatornaja a control log (0.7+). Eltavolitas: 2.0.');
   }
 
   // 1/c. Control-log commitment (0.7): ha a hivo atad egy controlPath-t, az STH

@@ -787,11 +787,23 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                 eff_log = trust_root["logs"][0].get("log_id")
             pool = []
             seen = set()
-            # 0.7: a control log governance-rekordjai ugyanabba a poolba (dedup)
+            # 1.0 EMBEDDED_BYPASS: control log mellett a benne NEM szereplo
+            # beagyazott succession a governance-csatorna megkerulese -> fail-closed
+            ctl_hashes = set(sha256_str(r) for r in (control_records or []))
+            using_control = bool(control_records)
+            for s in sths:
+                emb = s.get("embedded_succession")
+                if emb and using_control and sha256_str(emb) not in ctl_hashes:
+                    P("EMBEDDED_BYPASS: STH (tree_size=%s): embedded_succession nincs a control logban - a governance-csatorna megkerulese"
+                      % s.get("tree_size"))
+            # 0.7: a control log governance-rekordjai ugyanabba a poolba (dedup);
+            # az embedded csak akkor, ha NEM bypass (control log nelkul, vagy benne van)
+            embedded_pool = [s.get("embedded_succession") for s in sths
+                             if s.get("embedded_succession") and
+                             (not using_control or sha256_str(s.get("embedded_succession")) in ctl_hashes)]
             for src, rec in ([("successions", s) for s in (successions or [])] +
                              [("control", s) for s in (control_records or [])] +
-                             [("embedded", s.get("embedded_succession")) for s in sths
-                              if s.get("embedded_succession")]):
+                             [("embedded", e) for e in embedded_pool]):
                 if not isinstance(rec, dict) or rec.get("record_type") != "key_succession":
                     continue
                 h = sha256_str(rec)

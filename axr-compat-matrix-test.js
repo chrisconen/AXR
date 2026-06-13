@@ -120,17 +120,25 @@ function pyverify(dir, keyPem, extra) {
   ok(axr.leafHash(leaf) === axr.leafHash({ ...leaf }), 'level-hash determinisztikus a 0.3 receiptre');
 
   // ─────────────────────────────────────────────────────────────────────────
-  section('B) LEGACY-VERIFY: 0.2-szeru log a 0.8 toolinggal');
-  // 0.2-es stilus: nincs anchor_ref, nincs STH - csak alairt lanc
+  section('B) LEGACY-VERIFY: FAGYASZTOTT 0.2 fixture a 0.8 toolinggal');
+  // A bizonyitek ereje azon mulik, hogy a fixture egy KORABBAN rogzitett, BYTE-RA
+  // FAGYASZTOTT log (fixtures/legacy-0.2.jsonl) - NEM az aktualis koddal
+  // ujragyartva (Meridian-review). Ha egy jovobeli core-valtozas megtori a 0.2
+  // verifikaciot, EZ a teszt bukik -> a frozen wire format elo regresszio-zara.
   const dirB = mkdir('legacy');
-  const rpB = path.join(dirB, 'receipts.jsonl');
-  // belsoleg konzisztens 0.2-es lanc (anchor_ref mezo nelkul), STH/anchor nelkul
-  const run2 = makeRun(op.privateKey, null, 'B1', '0.2');
-  fs.writeFileSync(rpB, run2.receipts.map(r => JSON.stringify(r)).join('\n') + '\n');
+  const frozen = fs.readFileSync(path.join(__dirname, 'fixtures', 'legacy-0.2.jsonl'), 'utf8');
+  const frozenPub = fs.readFileSync(path.join(__dirname, 'fixtures', 'legacy-0.2.pubkey.pem'), 'utf8');
+  fs.writeFileSync(path.join(dirB, 'receipts.jsonl'), frozen);
   fs.writeFileSync(path.join(dirB, 'sth.jsonl'), '');
   fs.writeFileSync(path.join(dirB, 'anchors.jsonl'), '');
-  ok(jverify(dirB, op.publicKey) === 0, '0.2-es (STH/anchor nelkuli) log a 0.8 JS verifierrel: exit 0');
-  if (PYTHON) ok(pyverify(dirB, op.publicKey) === 0, 'ugyanez Python: exit 0 (frozen wire format)');
+  ok(jverify(dirB, frozenPub) === 0, 'fagyasztott 0.2 fixture a 0.8 JS verifierrel: exit 0');
+  if (PYTHON) ok(pyverify(dirB, frozenPub) === 0, 'ugyanez Python: exit 0 (frozen wire format, byte-stabil)');
+  // tamper a fagyasztott fixture-on -> mindket verifier elutasit (a fixture el)
+  const tampered = frozen.trim().split('\n').map(JSON.parse);
+  tampered[tampered.length - 1].outcome.final_status = 'TAMPERED';
+  fs.writeFileSync(path.join(dirB, 'receipts.jsonl'), tampered.map(r => JSON.stringify(r)).join('\n') + '\n');
+  ok(jverify(dirB, frozenPub) === 1, 'a fagyasztott fixture tamperelese -> JS verifier exit 1');
+  if (PYTHON) ok(pyverify(dirB, frozenPub) === 1, 'ugyanez Python: exit 1');
 
   // ─────────────────────────────────────────────────────────────────────────
   section('C) FULL-STACK 0.8: kvorum-root -> rotacio -> revokacio -> control -> witness');
@@ -159,7 +167,8 @@ function pyverify(dir, keyPem, extra) {
   const rpC = path.join(dirC, 'receipts.jsonl');
   const trPath = path.join(dirC, 'trust-root.json'); fs.writeFileSync(trPath, JSON.stringify(qTr) + '\n');
   const controlPath = path.join(dirC, 'control.jsonl');
-  fs.writeFileSync(controlPath, [recSucc, recRev, wset].map(r => JSON.stringify(r)).join('\n') + '\n');
+  // 1.0: MINDEN governance a control logban (az sth-succession is) - nincs embedded
+  fs.writeFileSync(controlPath, [sthSucc, recSucc, recRev, wset].map(r => JSON.stringify(r)).join('\n') + '\n');
   const succPath = path.join(dirC, 'successions.jsonl'); fs.writeFileSync(succPath, JSON.stringify(recSucc) + '\n');
   const baseC = { receiptsPath: rpC, sthPath: path.join(dirC, 'sth.jsonl'),
     anchorsPath: path.join(dirC, 'anchors.jsonl'), backends: ['local'], logId: LOG, now: T0,
@@ -170,7 +179,9 @@ function pyverify(dir, keyPem, extra) {
   await runAnchor({ ...baseC, privateKeyPem: A.privateKey });
   const r2 = makeRun(Rc2.privateKey, r1.workflowHash, 'C2');
   fs.appendFileSync(rpC, r2.receipts.map(r => JSON.stringify(r)).join('\n') + '\n');
-  await runAnchor({ ...baseC, privateKeyPem: B.privateKey, succession: sthSucc });
+  // 1.0: NINCS --succession (control log mellett tilos); az sth-rotaciot a
+  // control logbeli sthSucc autorizalja, az STH-t mar a B kulcs irja ala
+  await runAnchor({ ...baseC, privateKeyPem: B.privateKey });
   // witnessek cosignolnak minden STH-t
   const sths = fs.readFileSync(baseC.sthPath, 'utf8').trim().split('\n').map(JSON.parse)
     .map(sth => sth.record_type === 'sth' ? s.assembleWitnessCosignatures(sth,
@@ -181,7 +192,7 @@ function pyverify(dir, keyPem, extra) {
 
   const monC = pollMonitor({ sthPath: baseC.sthPath, publicKeyPem: A.publicKey,
     statePath: path.join(dirC, 'mon.json'), receiptsPath: rpC, trustRoot: [qTr],
-    control: [recSucc, recRev, wset], requireWitnesses: true, now: T0 });
+    control: [sthSucc, recSucc, recRev, wset], requireWitnesses: true, now: T0 });
   ok(monC.ok, 'FULL-STACK monitor (--require-witnesses): nincs sertes: ' + JSON.stringify(monC.violations));
   const fullExtra = ['--trust-root', trPath, '--control', controlPath, '--successions', succPath, '--require-witnesses'];
   ok(jverify(dirC, Rc1.publicKey, fullExtra) === 0, 'FULL-STACK JS verifier (minden reteg, --require-witnesses): exit 0');
