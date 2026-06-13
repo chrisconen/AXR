@@ -5,6 +5,28 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.3.0] - 2026-06-13
+
+Programmatic full-log verification in the SDK — additive, non-protocol.
+Completes the SDK started in 1.2.
+
+### Added
+
+- **`axr.verify(opts)`** (`axr-sdk-verify.js`) — async full-log verification
+  returning `{ ok, exitCode, problems, notices, output }`. It runs the
+  **canonical verifier** (`axr-verify.js`) and derives the verdict from the
+  **frozen exit-code contract** (0 valid / 1 invalid / 2 usage-IO), so the SDK
+  verdict **can never diverge** from the CLI. `problems`/`notices` are
+  best-effort lines parsed from the verifier report (human-readable; the text
+  format is not frozen — the exit code is). `receipts` and `publicKey` (paths)
+  are required; a spawn failure rejects.
+- **`axr-sdk-verify-test.js`** (9 assertions): valid log → `ok:true`, tampered →
+  `ok:false` with non-empty `problems`, **non-divergence** check (SDK `exitCode`
+  equals the directly-run CLI exit code on the same inputs, valid and tampered),
+  usage/IO error → `exitCode 2`, missing required opts → reject.
+- `axr.verify` pinned in the SDK surface test; documented in `AXR-SDK.md`
+  (the prior "not in the SDK yet" note is removed) and the README library section.
+
 ## [1.2.0] - 2026-06-13
 
 Frozen public JavaScript SDK surface — additive (no wire-format, CLI, or

@@ -29,6 +29,7 @@ const report = require('./axr-report');
 const generator = require('./axr-generator');
 const journalReceipts = require('./axr-journal-receipts');
 const webhook = require('./axr-webhook');
+const { verifyLog } = require('./axr-sdk-verify');
 
 module.exports = {
   // Verzio (a package.json-bol; a wire-format/CLI-szerzodes verzioja kulon, a
@@ -41,6 +42,11 @@ module.exports = {
   ...core,
   sign: core.signReceipt,                 // alias: receipt alairasa
   keyFingerprint: governance.keyFingerprint,
+
+  // Teljes-log verifikacio (async): a kanonikus verifikalot futtatja, a verdikt
+  // a fagyasztott kilepesi kodbol -> sosem terhet el a CLI-tol. Lasd AXR-SDK.md.
+  // verify(opts) -> Promise<{ ok, exitCode, problems, notices, output }>
+  verify: verifyLog,
 
   // ── Nevterek (a teljes, kurált felulet) ──────────────────────────────────
   core,              // kanonikalizalas, hash, alairas/ellenorzes, Merkle/MMR,

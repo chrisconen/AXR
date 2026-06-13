@@ -71,10 +71,11 @@ const h  = axr.sha256(value);                             // "sha256:<hex>" over
 
 // namespaced surface: axr.core, axr.governance, axr.anchor, axr.monitor,
 // axr.control, axr.ocsf, axr.report, axr.generator, axr.journalReceipts, axr.webhook
-const res = axr.monitor.pollMonitor(opts);                // programmatic integrity check
+const res = await axr.verify({ receipts: 'receipts.jsonl', publicKey: 'pub.pem', sth: 'sth.jsonl', anchors: 'anchors.jsonl' });
+// res = { ok, exitCode, problems, notices, output } — runs the canonical verifier, verdict from the frozen exit code
 ```
 
-Full surface and the 1.x stability policy: **`AXR-SDK.md`**. The pinning test `axr-sdk-surface-test.js` keeps the surface honest. (Full-log verification stays the `bin/axr-verify` CLI; programmatic checking is `axr.monitor.pollMonitor`.)
+Full surface and the 1.x stability policy: **`AXR-SDK.md`**. The pinning test `axr-sdk-surface-test.js` keeps the surface honest. `axr.verify()` cannot diverge from the CLI (it runs the canonical verifier and reads the frozen exit code); for in-memory per-record checks use `axr.core.verifyReceipt` / `axr.monitor.pollMonitor`.
 
 ---
 

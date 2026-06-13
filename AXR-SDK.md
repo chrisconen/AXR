@@ -39,7 +39,8 @@ Zero runtime dependencies (Node's built-in `crypto` only); Node ≥ 18.
 | `canonicalize(value)` | → string | deterministic JSON (sorted keys, no whitespace) |
 | `sha256(value)` | → `"sha256:<hex>"` | hash of the canonical bytes |
 | `signReceipt(obj, privPem)` / `sign(...)` | → base64 | Ed25519 over the signable part |
-| `verifyReceipt(obj, pubPem)` | → boolean | signature check |
+| `verifyReceipt(obj, pubPem)` | → boolean | single-receipt signature check |
+| `verify(opts)` | → Promise | full-log verification (async); see below |
 | `keyFingerprint(pem)` | → `"sha256:<hex>"` | PEM-body fingerprint |
 
 The full `core` surface is also spread at top level for backward compatibility
@@ -84,14 +85,37 @@ SIEM export (`toDetectionFindings`), human-readable compliance report
 the dogfooding journal→receipt primitive (`buildJournalReceipts`), and
 best-effort detection delivery (`deliver`).
 
-## Full-log verification
+## Full-log verification — `axr.verify()` (async)
 
-A single-call "verify this whole log directory" wrapper is intentionally **not**
-in the SDK yet: full-log verification is the `bin/axr-verify` CLI (and its
-Python mirror `axr_verify.py`), which orchestrates several input files and exit
-codes. Programmatically, compose `axr.core.verifyReceipt` (per receipt) with
-`axr.monitor.pollMonitor` (the STH stream + governance + witnesses); a unified
-`axr.verify()` wrapper is a candidate additive 1.x extension.
+`axr.verify(opts)` runs the **canonical verifier** over a whole log and returns a
+structured verdict. It is **async** (full-log verification is an I/O — and, with
+`online`, network — operation) and **never diverges from the CLI**: it invokes
+the same canonical verifier and derives `ok` from the frozen exit-code contract
+(`AXR-SPEC-1.0.md`: 0 = valid, 1 = tampered/invalid, 2 = usage/IO error).
+
+```js
+const r = await axr.verify({
+  receipts: 'receipts.jsonl',           // required (path)
+  publicKey: 'pub.pem',                 // required (path)
+  sth: 'sth.jsonl',                     // optional
+  anchors: 'anchors.jsonl',             // optional
+  trustRoot: 'trust-root.json',         // optional
+  control: 'control.jsonl',             // optional
+  successions: 'succ.jsonl', revocations: 'rev.jsonl', sthKey: 'sth.pem',
+  logId: 'axr:agent:v1',
+  strict: false, online: false, requireWitnesses: false
+});
+// r = { ok, exitCode, problems: [...], notices: [...], output }
+//   ok / exitCode  — from the frozen exit-code contract (authoritative)
+//   problems/notices — best-effort lines parsed from the verifier report
+//                      (human-readable; the text format is NOT frozen)
+//   output         — the verifier's full stdout+stderr
+```
+
+`opts.receipts` and `opts.publicKey` are required (the call rejects otherwise);
+a spawn failure (e.g. no `node`) rejects. For **in-memory** / per-record checks
+without a child process, use `axr.core.verifyReceipt` and `axr.monitor.pollMonitor`
+directly. The Python mirror `axr_verify.py` remains available as a CLI.
 
 ## Example: build and verify a witness revocation
 

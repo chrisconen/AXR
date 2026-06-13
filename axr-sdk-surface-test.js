@@ -30,7 +30,7 @@ function genKey() {
 }
 
 // A FAGYASZTOTT felulet: top-level nevek + nevterenkent a kotelezo publikus fgv-ek.
-const TOP_LEVEL_FN = ['canonicalize', 'sha256', 'signReceipt', 'sign', 'verifyReceipt', 'keyFingerprint'];
+const TOP_LEVEL_FN = ['canonicalize', 'sha256', 'signReceipt', 'sign', 'verifyReceipt', 'keyFingerprint', 'verify'];
 const NAMESPACES = {
   core: ['canonicalize', 'sha256', 'signReceipt', 'verifyReceipt', 'chainHash', 'signablePart',
          'merkleRoot', 'merkleRootFromLeaves', 'inclusionProof', 'verifyInclusion',

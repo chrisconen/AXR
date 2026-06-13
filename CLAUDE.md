@@ -148,6 +148,17 @@ teljes-log verify a bin/axr-verify, programozottan a monitor.pollMonitor.
 smoke-test. Release: v1.2.0. (Nem-protokoll lévén review nélkül, a pinning-teszt
 a garancia.)
 
+## 1.3 — KÉSZ (2026-06-13): programozott teljes-log verify az SDK-ban
+
+Additív, nem-protokoll; az 1.2 SDK befejezése. `axr.verify(opts)` (async) a
+teljes-log verifikációt adja: `{ ok, exitCode, problems, notices, output }`.
+A KANONIKUS verifikálót (axr-verify.js) futtatja, a verdikt a FAGYASZTOTT
+exit-kód-szerződésből (0/1/2) → sosem divergálhat a CLI-től (nem refaktoráltam a
+kritikus verifikálót — doktrína: integritás > kényelem). receipts+publicKey
+kötelező (különben reject). axr-sdk-verify.js + axr-sdk-verify-test.js (9 állítás,
+benne a CLI-exitkód non-divergencia keresztcheck), surface-pin + AXR-SDK.md +
+README. 39 suite zöld. Release: v1.3.0.
+
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 
 Scope: AXR-0.8-SCOPE.md (Meridian+NEXUS review). Megelőző equivocation-védelem:
