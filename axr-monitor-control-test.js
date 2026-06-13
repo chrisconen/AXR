@@ -145,6 +145,28 @@ function appendLeaves(p, n) {
     'a nagyobb fa-meretu STH nem commitol, de korabbi igen -> CONTROL_DOWNGRADE');
 
   // ─────────────────────────────────────────────────────────────────────────
+  section('5b. CONTROL_DOWNGRADE within-poll kozteso res (commit -> no -> commit)');
+  // Meridian-review: a kozteso nem-commitolo STH-t is el kell kapni, nem csak
+  // a legnagyobbat. Log: STH1 commitol, STH2 NEM, STH3 commitol.
+  const dir5b = fs.mkdtempSync(path.join(dir, 'g-'));
+  const rp5b = path.join(dir5b, 'receipts.jsonl'); fs.writeFileSync(rp5b, '');
+  const sp5b = path.join(dir5b, 'sth.jsonl');
+  const cp5b = path.join(dir5b, 'control.jsonl');
+  fs.writeFileSync(cp5b, JSON.stringify(succRec) + '\n');
+  const base5b = { receiptsPath: rp5b, sthPath: sp5b, anchorsPath: path.join(dir5b, 'anchors.jsonl'),
+    backends: ['local'], logId: LOG, now: T0 };
+  appendLeaves(rp5b, 2);
+  await runAnchor({ ...base5b, privateKeyPem: A.privateKey, controlPath: cp5b, controlTrustRootPath: trPath }); // STH1 commit
+  appendLeaves(rp5b, 1);
+  await runAnchor({ ...base5b, privateKeyPem: A.privateKey }); // STH2 NEM commit (kozteso)
+  appendLeaves(rp5b, 1);
+  await runAnchor({ ...base5b, privateKeyPem: A.privateKey, controlPath: cp5b, controlTrustRootPath: trPath }); // STH3 commit
+  const resGap = pollMonitor({ sthPath: sp5b, publicKeyPem: A.publicKey, statePath: path.join(dir5b, 'mon.json'),
+    receiptsPath: rp5b, trustRoot: trustRootRecords, control: [succRec], now: T0 });
+  ok(codes(resGap).includes('CONTROL_DOWNGRADE'),
+    'a kozteso (nem legnagyobb) nem-commitolo STH is CONTROL_DOWNGRADE');
+
+  // ─────────────────────────────────────────────────────────────────────────
   section('6. Ervenytelen control-rekord');
   const forged = s.buildKeySuccession({ log_id: LOG, role: 'sth',
     predecessor_fingerprint: s.keyFingerprint(A.publicKey), successor_public_key: Rc2.publicKey,

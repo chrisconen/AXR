@@ -153,6 +153,20 @@ async function buildLog(dir, controlPath, trPath) {
   ok(runV('node', dir1, a1, forgedPath) === 1, 'JS: hamis root-tal alairt control-rekord -> exit 1');
   if (PYTHON) ok(runV(PYTHON, dir1, a1, forgedPath) === 1, 'Python: ugyanez -> exit 1');
 
+  // ─────────────────────────────────────────────────────────────────────────
+  section('5. Commitolo STH + hianyzo --control flag (NEXUS-review)');
+  // ha az STH-k commitolnak, de a verifier NEM kap --control-t, az NEM csendes
+  // atlepes (0.6 fallback) - hanem CONTROL_WITHHELD, fail-closed
+  function runVnoCtl(cmd, dir, a) {
+    const script = cmd === 'node' ? 'axr-verify.js' : 'axr_verify.py';
+    const args = [path.join(__dirname, script), path.join(dir, 'receipts.jsonl'), a.keyPath,
+      path.join(dir, 'sth.jsonl'), path.join(dir, 'anchors.jsonl'), '--trust-root', a.trPath];
+    try { execFileSync(cmd, args, { stdio: 'pipe' }); return 0; }
+    catch (e) { return e.status == null ? -1 : e.status; }
+  }
+  ok(runVnoCtl('node', dir1, a1) === 1, 'JS: commitolo STH + nincs --control -> exit 1 (CONTROL_WITHHELD)');
+  if (PYTHON) ok(runVnoCtl(PYTHON, dir1, a1) === 1, 'Python: ugyanez -> exit 1');
+
   console.log(`\nOsszesen: ${pass} ok, ${fail} hiba` + (PYTHON ? '' : ' (Python esetek kihagyva)'));
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('VARATLAN HIBA:', e); process.exit(1); });
