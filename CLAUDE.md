@@ -98,6 +98,19 @@ keresztreview-val. Release: v0.6.0. Eredeti terv (referenciának):
 5. Spec: AXR-SPEC-0.6.md kvórum-policy threat-model szekcióval, 2-of-3
    ajánlással (nem kényszer).
 
+## 1.0 — KÉSZ (2026-06-13): érettségi mérföldkő
+
+Nem új réteg: a 0.2–0.8 konszolidálása egy stabil szerződéssé. Szállítva:
+cross-version kompat-mátrix (fagyasztott legacy-0.2 fixture), embedded_succession
+governance-cleanup (sidecar megtagadja --succession+--control; EMBEDDED_BYPASS a
+fogyasztókban), AXR-SPEC-1.0.md (réteg/record/kód-regiszter + integritás-profil
++ 1.x kompat-policy), README Stable + QUICKSTART, package 1.0.0. A külső szerződés
+(wire format, canonicalization, CLI exit-kódok, kódnevek) fagyott 1.x-ig; a JS
+modul-export NEM fagyott (1.1-ig). Release: v1.0.0.
+
+Halasztva post-1.0-ra: emergency witness-revokáció, részleges control-disclosure,
+több namespace, fagyott JS SDK-felület, embedded_succession teljes eltávolítása (2.0).
+
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 
 Scope: AXR-0.8-SCOPE.md (Meridian+NEXUS review). Megelőző equivocation-védelem:

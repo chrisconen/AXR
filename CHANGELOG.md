@@ -5,6 +5,46 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.0.0] - 2026-06-13
+
+Maturity declaration — not a new layer. 1.0 consolidates 0.2–0.8 into one
+stable contract, proves the cross-version compatibility claim, completes the
+one promised governance cleanup, and states the 1.x compatibility policy.
+Spec: `AXR-SPEC-1.0.md` (overview + contract); the 0.2–0.8 layer specs remain
+the normative detail. Scope/decision trail: `AXR-0.1-...`/`AXR-1.0-SCOPE.md`,
+synthesized from Meridian (readiness/threat-model) and NEXUS (value/adoption)
+reviews; Meridian gated approval on the integrity profile being normatively
+fixed and test-covered — now done.
+
+### Added
+
+- **Cross-version compatibility matrix** (`axr-compat-matrix-test.js`, 13
+  assertions) anchored on a **byte-frozen legacy fixture**
+  (`fixtures/legacy-0.2.jsonl`, committed, never regenerated): every layer
+  opt-out yields prior behaviour, the frozen 0.2 log verifies (and a tamper
+  rejects) under both 0.8 verifiers, a full 0.8 stack passes anchor → monitor
+  → JS + Python verifier, and the volatile fields are additive. A live
+  regression lock on the "frozen wire format" claim.
+- **`AXR-SPEC-1.0.md`** — layer map, record-type and code registers, volatile-
+  field list, the normative integrity profile (N1/N2/N4 + the conditional
+  witness preventiveness + no-emergency-revocation, stated as limits), the
+  consolidated verifier checks 1–17, and the **1.x compatibility policy**:
+  wire format / canonicalization / hash / signature inputs / CLI exit codes /
+  code names are frozen for 1.x (breaking only at 2.0); the JS module-export
+  surface is explicitly **not** frozen in 1.0 (stabilizes later in 1.x); the
+  Python verifier guarantees verdict parity, not notice parity.
+
+### Changed (governance cleanup)
+
+- **`embedded_succession` writer removed where a control log is in use.** The
+  sidecar refuses `--succession` together with `--control` (fail-fast);
+  standalone `--succession` (no control log) still writes it for pure-0.5
+  deployments, and reading/verifying it remains for all existing logs. Where a
+  control log is present, an embedded succession absent from it is the new
+  `EMBEDDED_BYPASS` violation (monitor + both verifiers) — closing the
+  governance-channel-bypass residue Meridian flagged. Migration: route key
+  governance through `axr-key-succession control add`.
+
 ## [0.8.0] - 2026-06-13
 
 Preventive-equivocation layer: STH witness cosignatures make equivocation
