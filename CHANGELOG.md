@@ -5,6 +5,26 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [Unreleased]
+
+### Added
+
+- **Compliance Report Generator** (`axr-report.js`, in `bin` as `axr-report`).
+  Produces a self-contained, human-auditable HTML (or JSON) report from an AXR
+  log: log overview, signature/anchoring integrity, the key-governance
+  timeline (genesis + successions + revocations, active key per role,
+  authorized/revoked flags), control-log commitment summary, privacy/
+  side-effect counts, and an EU AI Act Art.12 / GDPR control mapping drawn
+  from COMPLIANCE.md (with the honest caveats). Honest framing per the project
+  doctrine: the report is a *view* over the verifier's verdict — the big
+  PASS/FAIL banner is the exit code of `axr-verify.js` run with the same
+  flags, faithfully reported; the report asserts nothing it did not check and
+  states the N1/N2/N4 limits explicitly. Reproducible (same inputs → same
+  report, generation timestamp aside). 18 assertions incl. a cross-check that
+  the report verdict matches the verifier on both a valid log and a tampered
+  one. A separate track (not protocol scope) — the NEXUS-identified "what an
+  auditor asks for first."
+
 ## [0.7.0] - 2026-06-13
 
 Governance-distribution layer: the control log closes the withholding and

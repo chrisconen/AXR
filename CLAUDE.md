@@ -109,10 +109,15 @@ monitor --control (CONTROL_LAG→WITHHELD eszkaláció, DOWNGRADE, journal-pin),
 JS+Python verifier check 16, CLI control add/verify/status, AXR-SPEC-0.7.md.
 Release: v0.7.0.
 
+KÉSZ külön sávként (nem protokoll, 2026-06-13): **Compliance Report Generator**
+(`axr-report.js`) — ember-olvasható HTML/JSON riport; a PASS/FAIL a verifier
+verdiktje (nézet, nem helyettesítés); EU AI Act Art.12 / GDPR control-mapping;
+18 teszt + cross-check a verifierrel. `bin`-ben mint `axr-report`.
+
 Halasztva 0.8+-ra: részleges control-disclosure (inclusion proof a
 control-fán), több control-namespace, verzió-kapu új control-rekordtípushoz,
-embedded_succession kivezetése. Külön sáv (nem protokoll): Compliance Report
-Generator, 0.5+ production rollout tooling. Elvetve: wall-clock ablakok.
+embedded_succession kivezetése. Külön sáv (nem protokoll): 0.5+ production
+rollout tooling. Elvetve: wall-clock ablakok.
 
 ## Sorvégek — figyelem
 

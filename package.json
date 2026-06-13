@@ -28,7 +28,8 @@
     "axr-verify": "axr-verify.js",
     "axr-anchor": "axr-anchor.js",
     "axr-monitor": "axr-monitor.js",
-    "axr-key-succession": "axr-key-succession.js"
+    "axr-key-succession": "axr-key-succession.js",
+    "axr-report": "axr-report.js"
   },
   "files": [
     "axr-core.js",
@@ -41,6 +42,7 @@
     "axr-succession.js",
     "axr-key-succession.js",
     "axr-control.js",
+    "axr-report.js",
     "axr-ocsf.js",
     "axr-webhook.js",
     "axr_verify.py",

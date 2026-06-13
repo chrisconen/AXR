@@ -248,6 +248,17 @@ node axr-monitor.js poll sth.jsonl pub.pem --webhook https://siem.example/hook \
 
 Delivery is **best-effort by design**: a dead SIEM endpoint can neither silence the monitor nor fail a consistent log — the exit code is always the detection result.
 
+### Compliance Report Generator — the auditor's view
+
+An auditor does not read JSONL and Merkle trees at the command line. `axr-report.js` turns a log into a self-contained, human-auditable **HTML** (or JSON) report: log overview, signature & anchoring integrity, the **key-governance timeline** (genesis → successions → revocations, the active key per role, authorized/revoked flags), the control-log commitment summary, privacy/side-effect counts, and an **EU AI Act Art.12 / GDPR control mapping** (drawn from COMPLIANCE.md, with the honest caveats).
+
+```bash
+node axr-report.js receipts.jsonl pub.pem sth.jsonl anchors.jsonl \
+  --trust-root trust-root.json --control control.jsonl --out report.html
+```
+
+Honest framing, per the project's doctrine: the report is a **view over the verifier's verdict**, not a replacement for it. The PASS/FAIL banner is the exit code of `axr-verify.js` run with the same flags, faithfully reported; the report asserts nothing it did not check, restates the N1/N2/N4 limits, and is reproducible (same inputs → same report). A test cross-checks that the report's verdict matches the verifier on both a valid and a tampered log.
+
 ### Determinism and adversarial testing
 
 The "anyone can verify, in any language" claim rests on **byte-identical canonicalization**. `core.canonicalize` follows RFC 8785 (JCS) key ordering (UTF-16 code units) and ECMAScript number formatting, and **throws** on `NaN`/`Infinity`/`undefined`/`bigint`/non-plain objects rather than silently corrupting them (which `JSON.stringify` would). Cross-implementation byte vectors are pinned in `axr-canonical-test.js`.
@@ -453,6 +464,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-succession.js` | **0.5:** key-succession module — genesis-bearing trust root, root-signed succession records, predecessor-linked key timeline (transitive authorization, fail-closed forks), `keyAtTreeSize`; **0.6:** quorum primitives (`signQuorumPart`/`assembleQuorum`/`verifyQuorumSigned`), trust-root chains (`buildTrustRootSuccessor`/`verifyTrustRootChain`), revocation (`key_revocation`, `revoked_from`) |
 | `axr-key-succession.js` | **0.5:** succession CLI — `build`, `verify`, `fingerprint`; **0.6:** ceremony (`body`/`sign`/`assemble --verify`), `revoke`, chain-capable anchors |
 | `axr-control.js` | **0.7:** control-log module — `controlRoot` (RFC 6962 over governance records), `verifyControlLog`, `checkSthCommitment`, `checkControlConsistency` (append-only over the control tree) |
+| `axr-report.js` | **Compliance Report Generator** — human-auditable HTML/JSON report from a log: integrity, key-governance timeline, anchoring, EU AI Act Art.12 / GDPR control mapping; the PASS/FAIL banner is the verifier's verdict (a view, not a replacement) |
 | `axr-ocsf.js` | **0.5:** OCSF 1.1.0 Detection Finding mapping for monitor events — deterministic finding uids, fail-closed severity for unknown violation codes |
 | `axr-webhook.js` | **0.5:** generic best-effort webhook delivery (http/https only, retry, never affects detection results) |
 | `axr-test-0.3.js` | **0.3:** Merkle/proof test vectors + end-to-end verifier test |
@@ -484,6 +496,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-anchor-control-test.js` | **0.7:** sidecar commitment — backward compat, empty log, incremental, forged-record/missing-trust-root both throw |
 | `axr-monitor-control-test.js` | **0.7:** monitor — `CONTROL_LAG`→`CONTROL_WITHHELD` escalation, `ROOT_MISMATCH`, `NON_APPEND_ONLY`, `DOWNGRADE` |
 | `axr-verify-control-test.js` | **0.7:** cross-impl verifier control checks — JS and Python agree on accept AND reject |
+| `axr-report-test.js` | **CRG:** model fields, governance timeline, HTML/JSON render, and the report verdict cross-checked against `axr-verify.js` on valid and tampered logs |
 | `run-tests.js` | Unified test runner (`npm test`) — runs every suite, aggregates exit code for CI |
 | `package.json` | Package metadata, `npm test` wiring, zero runtime dependencies |
 | `.github/workflows/ci.yml` | CI matrix (Node 18/20/22 x Python 3.10/3.11/3.12) running the full suite incl. cross-impl parity |
