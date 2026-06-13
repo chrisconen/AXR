@@ -63,7 +63,9 @@ Key succession/revocation: `buildKeySuccession`, `verifyKeySuccession`,
 Witnesses (0.8/1.1): `buildWitnessSet`, `verifyWitnessSet`,
 `buildWitnessTimeline`, `witnessAt`, `cosignWitness`,
 `assembleWitnessCosignatures`, `verifyWitnessCosignatures`,
-`buildWitnessRevocation`, `verifyWitnessRevocation`, `revokedWitnessesAt`.
+`buildWitnessRevocation`, `verifyWitnessRevocation`, `revokedWitnessesAt`
+(1.1, permanent), and `buildWitnessSuspension`, `verifyWitnessSuspension`,
+`suspendedWitnessesAt` (1.4, temporary `[from, until)` windows).
 (Quorum variants `buildQuorum*` are present for each governance record.)
 
 ### `axr.anchor` — RFC 6962 anchoring

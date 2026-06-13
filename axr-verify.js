@@ -665,6 +665,7 @@ if (sths.length) {
   if (trustRoot && controlRecords.length) {
     const wsets = [];
     const wrevs = [];
+    const wsusps = [];
     controlRecords.forEach((rec, i) => {
       if (!rec) return;
       if (rec.record_type === 'witness_set') {
@@ -681,20 +682,28 @@ if (sths.length) {
         if (!v.ok) { problem(`CONTROL_ROOT_MISMATCH: control witness_revocation[${i + 1}]: NEM verifikal: ${v.problems.join('; ')}`); return; }
         if (rec.log_id !== effLogId) { problem(`CONTROL_ROOT_MISMATCH: control witness_revocation[${i + 1}]: idegen log_id (${rec.log_id})`); return; }
         wrevs.push(rec);
+      } else if (rec.record_type === 'witness_suspension') {
+        // 1.4: witness-felfuggesztes root-verifikalva; az ervenyesek az idovonal-epitobe
+        const v = succ.verifyWitnessSuspension(rec, trustRoot);
+        if (!v.ok) { problem(`CONTROL_ROOT_MISMATCH: control witness_suspension[${i + 1}]: NEM verifikal: ${v.problems.join('; ')}`); return; }
+        if (rec.log_id !== effLogId) { problem(`CONTROL_ROOT_MISMATCH: control witness_suspension[${i + 1}]: idegen log_id (${rec.log_id})`); return; }
+        wsusps.push(rec);
       }
     });
-    if (wsets.length || wrevs.length) {
-      const wtl = succ.buildWitnessTimeline(wsets, trustRoot, wrevs);
+    if (wsets.length || wrevs.length || wsusps.length) {
+      const wtl = succ.buildWitnessTimeline(wsets, trustRoot, wrevs, wsusps);
       // ambiguous witness-policy fail-closed (Meridian-review), nem csendes kihagyas
       for (const p of wtl.problems) problem(`WITNESS_SET_AMBIGUOUS: ${p}`);
       for (const sth of sorted) {
         const we = succ.witnessAt(wtl.timeline, sth.tree_size);
         if (!we) continue;
-        // 1.1: az adott tree_size-nal mar revokalt witnessek kiszurese
+        // 1.1/1.4: revokalt (permanens) ill. felfuggesztett (ideiglenes) witnessek
         const revoked = succ.revokedWitnessesAt(wtl.revocations, sth.tree_size);
-        const wr = succ.verifyWitnessCosignatures(sth, we, revoked);
+        const suspended = succ.suspendedWitnessesAt(wtl.suspensions, sth.tree_size);
+        const wr = succ.verifyWitnessCosignatures(sth, we, revoked, suspended);
         for (const a of wr.anomalies) problem(`WITNESS_COSIGNATURE_INVALID: STH (tree_size=${sth.tree_size}): ${a}`);
         for (const fp of wr.revoked) problem(`WITNESS_REVOKED: STH (tree_size=${sth.tree_size}): revokalt witness cosignature-je (${fp.slice(0, 20)}...)`);
+        for (const fp of wr.suspended) notice(`WITNESS_SUSPENDED: STH (tree_size=${sth.tree_size}): felfuggesztett witness cosignature-je (${fp.slice(0, 20)}...) - ideiglenesen nem szamit`);
         if (wr.validCount < wr.threshold) {
           const m = `STH (tree_size=${sth.tree_size}): ${wr.validCount}/${wr.threshold} witness-cosignature`;
           if (ARGS.requireWitnesses) problem(`UNDER_WITNESSED: ${m} - a kuszob alatt (--require-witnesses)`);

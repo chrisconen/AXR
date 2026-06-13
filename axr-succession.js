@@ -634,6 +634,84 @@ function verifyWitnessRevocation(rec, rootAnchor) {
   return { ok: problems.length === 0, problems };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 1.4 - Witness-felfuggesztes (ideiglenes, auto-lejaro kizaras egy ablakra)
+// ═══════════════════════════════════════════════════════════════════════════════
+// A revokacio PERMANENS (kompromittalodas). A felfuggesztes IDEIGLENES es
+// JOINDULATU: egy witness ismert ideig nem elerheto (karbantartas, atmeneti
+// kiesés, kulcs-csere elokeszitese), de NEM kompromittalt. Egy [from, until)
+// tree_size-ablakra a cosignature-je nem szamit a kuszobba; until-tol AUTOMATIKUSAN
+// ujra szamit (nincs szukseg uj witness_set-re). Mivel joindulatu, a felfuggesztett
+// witness cosignature-jenek jelenlete az ablakban NEM violation, hanem NOTICE
+// (WITNESS_SUSPENDED) - szemben a revokacioval (WITNESS_REVOKED, violation).
+// Precedencia: ha egy fingerprint revokalt ES felfuggesztett is, a revokacio nyer.
+
+const WITNESS_SUSPENSION_VERSION = '1.4';
+
+function buildWitnessSuspensionBody(opts, now) {
+  if (!opts.log_id) throw new Error('witness_suspension: log_id kotelezo');
+  if (!opts.suspended_fingerprint) throw new Error('witness_suspension: suspended_fingerprint kotelezo');
+  if (!Number.isInteger(opts.suspended_from_tree_size) || opts.suspended_from_tree_size < 1)
+    throw new Error('witness_suspension: suspended_from_tree_size pozitiv egesz kell legyen');
+  if (!Number.isInteger(opts.suspended_until_tree_size) || opts.suspended_until_tree_size <= opts.suspended_from_tree_size)
+    throw new Error('witness_suspension: suspended_until_tree_size > suspended_from_tree_size kell legyen (exkluziv felso hatar)');
+  return {
+    axr_version: WITNESS_SUSPENSION_VERSION,
+    record_type: 'witness_suspension',
+    log_id: opts.log_id,
+    suspended_fingerprint: opts.suspended_fingerprint,
+    suspended_from_tree_size: opts.suspended_from_tree_size,
+    suspended_until_tree_size: opts.suspended_until_tree_size,
+    reason: opts.reason || 'unspecified',
+    issued_at: (now || (() => new Date().toISOString()))()
+  };
+}
+function buildWitnessSuspension(opts, rootPrivPem, now) {
+  const body = buildWitnessSuspensionBody(opts, now);
+  const sig = crypto.sign(null, Buffer.from(core.canonicalize(body), 'utf8'),
+    crypto.createPrivateKey(rootPrivPem)).toString('base64');
+  return { ...body, signature: sig };
+}
+function buildQuorumWitnessSuspension(opts, signerPrivPems, now) {
+  const body = buildWitnessSuspensionBody(opts, now);
+  return assembleQuorum(body, (signerPrivPems || []).map(p => signQuorumPart(body, p)));
+}
+
+// witness_suspension ellenorzese a root-horgonnyal (PEM | trust-root). A
+// verifyWitnessRevocation szerkezeti tukre. -> { ok, problems }
+function verifyWitnessSuspension(rec, rootAnchor) {
+  const problems = [];
+  if (!rec || typeof rec !== 'object') return { ok: false, problems: ['nem objektum'] };
+  if (rec.record_type !== 'witness_suspension') problems.push('record_type != witness_suspension');
+  if (!rec.log_id) problems.push('hianyzo log_id');
+  if (!rec.suspended_fingerprint) problems.push('hianyzo suspended_fingerprint');
+  if (!Number.isInteger(rec.suspended_from_tree_size) || rec.suspended_from_tree_size < 1)
+    problems.push('ervenytelen suspended_from_tree_size');
+  if (!Number.isInteger(rec.suspended_until_tree_size) || rec.suspended_until_tree_size <= rec.suspended_from_tree_size)
+    problems.push('ervenytelen suspended_until_tree_size (>from kell)');
+  if (problems.length) return { ok: false, problems };
+
+  let mode = null;
+  if (typeof rootAnchor === 'string') mode = { mode: 'single', keys: [rootAnchor], threshold: 1 };
+  else if (rootAnchor && rootAnchor.record_type === 'trust_root') {
+    mode = trustRootMode(rootAnchor);
+    if (mode.mode === 'invalid') return { ok: false, problems: mode.problems };
+  } else return { ok: false, problems: ['ervenytelen root-horgony'] };
+
+  if (mode.mode === 'quorum') {
+    const q = verifyQuorumSigned(rec, mode.keys, mode.threshold);
+    return { ok: q.ok, problems: q.problems };
+  }
+  if (!rec.signature) return { ok: false, problems: ['hianyzo signature'] };
+  const body = { ...rec }; delete body.signature;
+  try {
+    const ok = crypto.verify(null, Buffer.from(core.canonicalize(body), 'utf8'),
+      crypto.createPublicKey(mode.keys[0]), Buffer.from(rec.signature, 'base64'));
+    if (!ok) problems.push('a witness_suspension alairasa ERVENYTELEN a root-kulcsra');
+  } catch (e) { problems.push('witness_suspension alairas-ellenorzes hiba: ' + e.message); }
+  return { ok: problems.length === 0, problems };
+}
+
 // A revokalt witness-fingerprintek halmaza egy adott tree_size-nal a
 // buildWitnessTimeline {fingerprint, from_tree_size} kimenete alapjan: minden
 // olyan bejegyzes, aminek a from_tree_size-a <= treeSize. -> Set<fingerprint>
@@ -641,6 +719,16 @@ function revokedWitnessesAt(revocations, treeSize) {
   const set = new Set();
   for (const r of (revocations || []))
     if (r && r.from_tree_size <= treeSize) set.add(r.fingerprint);
+  return set;
+}
+
+// A felfuggesztett witness-fingerprintek halmaza egy adott tree_size-nal a
+// buildWitnessTimeline {fingerprint, from, until} kimenete alapjan: minden olyan
+// ablak, amire from <= treeSize < until (auto-lejaro). -> Set<fingerprint>
+function suspendedWitnessesAt(suspensions, treeSize) {
+  const set = new Set();
+  for (const s of (suspensions || []))
+    if (s && s.from <= treeSize && treeSize < s.until) set.add(s.fingerprint);
   return set;
 }
 
@@ -655,7 +743,7 @@ function revokedWitnessesAt(revocations, treeSize) {
 // alakban a fogyasztoknal a revokalt witnessek kiszuresehez (revokedWitnessesAt).
 //   -> { timeline: [{ from_tree_size, witnesses:[{name,fingerprint,pem}], threshold }],
 //        revocations: [{ fingerprint, from_tree_size }], problems }
-function buildWitnessTimeline(witnessSets, rootAnchor, revocations) {
+function buildWitnessTimeline(witnessSets, rootAnchor, revocations, suspensions) {
   const problems = [];
   const valid = [];
   const seen = new Set();
@@ -698,7 +786,17 @@ function buildWitnessTimeline(witnessSets, rootAnchor, revocations) {
     if (prev == null || r.revoked_at_tree_size < prev) revMap.set(r.revoked_fingerprint, r.revoked_at_tree_size);
   }
   const revocationsOut = [...revMap.entries()].map(([fingerprint, from_tree_size]) => ({ fingerprint, from_tree_size }));
-  return { timeline, revocations: revocationsOut, problems };
+  // 1.4: root-verifikalt witness_suspension rekordok feldolgozasa. Minden
+  // ervenyes ablak ({fingerprint, from, until}) megmarad - egy fingerprintnek
+  // tobb diszjunkt ablaka is lehet; a tagsagot a suspendedWitnessesAt donti.
+  const suspensionsOut = [];
+  for (const s of (suspensions || [])) {
+    if (!s || s.record_type !== 'witness_suspension') continue;
+    const v = verifyWitnessSuspension(s, rootAnchor);
+    if (!v.ok) { problems.push('elvetett witness_suspension (fingerprint=' + (s && String(s.suspended_fingerprint).slice(0, 20)) + '...): ' + v.problems.join('; ')); continue; }
+    suspensionsOut.push({ fingerprint: s.suspended_fingerprint, from: s.suspended_from_tree_size, until: s.suspended_until_tree_size });
+  }
+  return { timeline, revocations: revocationsOut, suspensions: suspensionsOut, problems };
 }
 
 function witnessAt(timeline, treeSize) {
@@ -736,14 +834,23 @@ function assembleWitnessCosignatures(sth, parts) {
 // cosignature-je NEM szamit a validCount-ba; ha megis ott van az STH-n, a
 // fingerprintje a visszaadott `revoked` listaba kerul (a fogyaszto WITNESS_REVOKED
 // violationt emittal ra). A threshold valtozatlan marad.
-//   -> { validCount, threshold, anomalies: [], revoked: [] }
-function verifyWitnessCosignatures(sth, witnessEntry, revoked) {
+//
+// 1.4: a `suspended` (opcionalis Set<fingerprint>) az adott tree_size-nal eppen
+// felfuggesztett witnesseket jeloli (lasd suspendedWitnessesAt). Egy felfuggesztett
+// witness cosignature-je sem szamit, de a jelenlete JOINDULATU - a fingerprintje a
+// `suspended` listaba kerul (a fogyaszto WITNESS_SUSPENDED NOTICE-t ad, nem
+// violationt). Precedencia: a revokacio eros (ha egy fingerprint revokalt ES
+// felfuggesztett is, revoked-kent kezeljuk).
+//   -> { validCount, threshold, anomalies: [], revoked: [], suspended: [] }
+function verifyWitnessCosignatures(sth, witnessEntry, revoked, suspended) {
   const anomalies = [];
   const revokedHit = [];
+  const suspendedHit = [];
   const revokedSet = revoked instanceof Set ? revoked : new Set(revoked || []);
+  const suspendedSet = suspended instanceof Set ? suspended : new Set(suspended || []);
   const threshold = witnessEntry ? witnessEntry.threshold : 0;
   const cosigs = Array.isArray(sth.witness_cosignatures) ? sth.witness_cosignatures : [];
-  if (!witnessEntry) return { validCount: 0, threshold: 0, anomalies, revoked: revokedHit };
+  if (!witnessEntry) return { validCount: 0, threshold: 0, anomalies, revoked: revokedHit, suspended: suspendedHit };
   const byFp = new Map();
   for (const w of witnessEntry.witnesses) byFp.set(w.fingerprint, w.pem);
   const body = { ...sth }; delete body.witness_cosignatures;
@@ -754,16 +861,25 @@ function verifyWitnessCosignatures(sth, witnessEntry, revoked) {
     if (prevFp !== null && !(part.witness_fingerprint > prevFp))
       anomalies.push('nem-determinisztikus cosignature-sorrend: ' + part.witness_fingerprint.slice(0, 20) + '...');
     prevFp = part.witness_fingerprint;
-    // 1.1: revokalt witness - a cosignature-je nem szamit, es jelezzuk (WITNESS_REVOKED)
+    // 1.1: revokalt witness - a cosignature-je nem szamit, es jelezzuk (WITNESS_REVOKED).
+    // A revokacio precedenciat elvez (a permanens kompromittalodas-jelzes a
+    // deklaracio/alairas-ellenorzes elott all, mert a fingerprint mar nem megbizhato).
     if (revokedSet.has(part.witness_fingerprint)) { revokedHit.push(part.witness_fingerprint); continue; }
+    // Meridian-review (1.4): a felfuggesztes joindulatu MINOSITESE (notice) csak
+    // DEKLARALT witnessre es ERVENYES alairasra all - kulonben a nem-deklaralt /
+    // ervenytelen cosig WITNESS_COSIGNATURE_INVALID anomalia marad, nem bujhat at
+    // benign WITNESS_SUSPENDED-kent puszta fingerprint-egyezessel.
     const pem = byFp.get(part.witness_fingerprint);
     if (!pem) { anomalies.push('nem-deklaralt witness: ' + part.witness_fingerprint.slice(0, 20) + '...'); continue; }
-    try {
-      if (crypto.verify(null, msg, crypto.createPublicKey(pem), Buffer.from(part.signature, 'base64'))) valid++;
-      else anomalies.push('ERVENYTELEN cosignature: ' + part.witness_fingerprint.slice(0, 20) + '...');
-    } catch (e) { anomalies.push('cosignature-ellenorzes hiba: ' + e.message); }
+    let sigOk = false;
+    try { sigOk = crypto.verify(null, msg, crypto.createPublicKey(pem), Buffer.from(part.signature, 'base64')); }
+    catch (e) { anomalies.push('cosignature-ellenorzes hiba: ' + e.message); continue; }
+    if (!sigOk) { anomalies.push('ERVENYTELEN cosignature: ' + part.witness_fingerprint.slice(0, 20) + '...'); continue; }
+    // 1.4: deklaralt + ervenyes, de felfuggesztett witness - nem szamit, joindulatu notice
+    if (suspendedSet.has(part.witness_fingerprint)) { suspendedHit.push(part.witness_fingerprint); continue; }
+    valid++;
   }
-  return { validCount: valid, threshold, anomalies, revoked: revokedHit };
+  return { validCount: valid, threshold, anomalies, revoked: revokedHit, suspended: suspendedHit };
 }
 
 // ── Kulcs-idovonal epitese genesisbol + successionokbol ───────────────────────
@@ -924,5 +1040,11 @@ module.exports = {
   buildWitnessRevocationBody,
   buildQuorumWitnessRevocation,
   verifyWitnessRevocation,
-  revokedWitnessesAt
+  revokedWitnessesAt,
+  WITNESS_SUSPENSION_VERSION,
+  buildWitnessSuspension,
+  buildWitnessSuspensionBody,
+  buildQuorumWitnessSuspension,
+  verifyWitnessSuspension,
+  suspendedWitnessesAt
 };

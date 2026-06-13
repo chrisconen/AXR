@@ -5,6 +5,57 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.4.0] - 2026-06-13
+
+Witness suspension — temporary, auto-expiring witness exclusion. Additive over
+the frozen 1.0 contract (one new control-log record type + one new **notice**
+code; no wire/CLI/behaviour change). A log with no `witness_suspension` verifies
+exactly as before. Spec: `AXR-SPEC-1.4.md`. Meridian + NEXUS cross-review.
+
+### Added
+
+- **`witness_suspension` control-log record** (`axr-succession.js`:
+  `buildWitnessSuspension` / `…Body` / `buildQuorumWitnessSuspension` /
+  `verifyWitnessSuspension`): a quorum/root-signed record that excludes one
+  witness fingerprint over a half-open `[from, until)` `tree_size` window. From
+  `until` the witness counts **again automatically** — no new `witness_set`.
+  Completes the witness lifecycle (slow revoke → emergency revoke → suspend).
+- **Benign semantics** (the distinction from revocation): a suspended witness's
+  cosignature inside the window does **not** count toward threshold, but its
+  presence is a **notice** (`WITNESS_SUSPENDED`), never a violation. The
+  threshold does not shrink — a suspension that drops the valid count below it
+  surfaces as `UNDER_WITNESSED` and recovers at `until`. **Revocation has
+  precedence**: a fingerprint both revoked and suspended is treated as
+  `WITNESS_REVOKED` (a permanent-compromise signal is never downgraded).
+- **Consumers**: monitor, JS verifier, and Python verifier fold root-verified
+  suspensions into the witness timeline (`buildWitnessTimeline` 4th arg +
+  `suspendedWitnessesAt` + `verifyWitnessCosignatures` `suspended` arg); the
+  monitor and JS verifier emit the `WITNESS_SUSPENDED` notice, the Python
+  verifier is verdict-only (does not count it, does not print it — verdict
+  matches). Forged/foreign-`log_id` suspension → `CONTROL_ROOT_MISMATCH`.
+  `axr-control.js` accepts the type; `axr-ocsf.js` maps `WITNESS_SUSPENDED`
+  (severity 1, Informational).
+- **CLI** (`axr-key-succession.js`): `suspend-witness` (single-key) and
+  `body witness-suspension` (quorum), with `verify` / `assemble --verify` dispatch.
+- **Tests** (`axr-witness-suspension-test.js`, 29 assertions incl. Python
+  cross-impl): record build/verify (single + quorum + tamper + foreign + structural),
+  window membership + auto-expiry + revocation precedence, the benign 3-of-3 /
+  threshold-2 case (notice, no violation, verifier exit 0 under
+  `--require-witnesses`), below-threshold → `UNDER_WITNESSED`, red-team
+  forged/foreign → `CONTROL_ROOT_MISMATCH`, backward-compat.
+
+### Review fixes (Meridian + NEXUS cross-review, both GO/approved, no blocker)
+
+- **Suspension is classified benign only after the declared-witness lookup and
+  signature check** (Meridian): a cosignature bearing a suspended fingerprint
+  that is undeclared or has an invalid signature is now
+  `WITNESS_COSIGNATURE_INVALID` (anomaly), not a benign `WITNESS_SUSPENDED`
+  notice — a mere fingerprint match can no longer downgrade a malformed
+  cosignature. Fixed in both JS and Python; two regression assertions added.
+- **SDK surface test now pins the witness-revocation and witness-suspension
+  governance exports** (NEXUS), and `AXR-SDK.md` documents the 1.4 suspension
+  functions in the `governance` namespace.
+
 ## [1.3.0] - 2026-06-13
 
 Programmatic full-log verification in the SDK — additive, non-protocol.

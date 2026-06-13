@@ -170,6 +170,20 @@ if (cmd === 'verify') {
     process.exit(1);
   }
 
+  if (record.record_type === 'witness_suspension') {
+    const res = succ.verifyWitnessSuspension(record, anchor);
+    if (res.ok) {
+      console.log('Witness suspension ERVENYES (root-alairt).');
+      console.log('  log_id:     ' + record.log_id);
+      console.log('  suspended:  ' + record.suspended_fingerprint);
+      console.log('  window:     tree_size [' + record.suspended_from_tree_size + ', ' + record.suspended_until_tree_size + ')');
+      console.log('  reason:     ' + record.reason + '  (issued_at: ' + record.issued_at + ')');
+      process.exit(0);
+    }
+    console.log('Witness suspension ERVENYTELEN: ' + res.problems.join('; '));
+    process.exit(1);
+  }
+
   const res = succ.verifyKeySuccession(record, anchor);
   if (res.ok) {
     console.log('Key succession ERVENYES (root-alairt).');
@@ -267,6 +281,43 @@ if (cmd === 'revoke-witness') {
   process.exit(0);
 }
 
+// ── suspend-witness (1.4, egykulcsos build) ────────────────────────────────────
+// Egy witness ideiglenes (auto-lejaro) felfuggesztese egy [from, until) ablakra.
+// Kvorumhoz a body witness-suspension / sign / assemble ceremonia valo.
+if (cmd === 'suspend-witness') {
+  const positional = [];
+  const flags = {};
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+    else positional.push(rest[i]);
+  }
+  const [rootPrivPath] = positional;
+  const usage = 'Hasznalat: node axr-key-succession.js suspend-witness <root-priv.pem> ' +
+    '--log-id <id> (--suspended <witness-pub.pem> | --suspended-fingerprint sha256:<hex>) ' +
+    '--from <tree_size> --until <tree_size> [--reason szoveg]';
+  if (!rootPrivPath || !flags['log-id'] || !flags.from || !flags.until) die(usage);
+  if (!flags.suspended && !flags['suspended-fingerprint']) die(usage);
+  const rootPriv = readFileOrDie(rootPrivPath, 'root privat kulcs');
+  const susFp = flags['suspended-fingerprint'] ||
+    succ.keyFingerprint(readFileOrDie(flags.suspended, 'felfuggesztendo witness publikus kulcs'));
+  let record;
+  try {
+    record = succ.buildWitnessSuspension({
+      log_id: flags['log-id'],
+      suspended_fingerprint: susFp,
+      suspended_from_tree_size: Number(flags.from),
+      suspended_until_tree_size: Number(flags.until),
+      reason: flags.reason
+    }, rootPriv);
+  } catch (e) { die('HIBA: ' + e.message); }
+  const rootPub = crypto.createPublicKey(crypto.createPrivateKey(rootPriv))
+    .export({ type: 'spki', format: 'pem' });
+  const chk = succ.verifyWitnessSuspension(record, rootPub);
+  if (!chk.ok) die('HIBA: a felepitett witness-felfuggesztes nem verifikal: ' + chk.problems.join('; '), 1);
+  process.stdout.write(JSON.stringify(record) + '\n');
+  process.exit(0);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Kvorum-ceremonia: body -> sign (alaironkent, kulon gepeken) -> assemble
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -338,6 +389,25 @@ if (cmd === 'body') {
     process.stdout.write(JSON.stringify(body) + '\n');
     process.exit(0);
   }
+  if (kind === 'witness-suspension') {
+    const usage = 'Hasznalat: node axr-key-succession.js body witness-suspension --log-id <id> ' +
+      '(--suspended <witness-pub.pem> | --suspended-fingerprint sha256:<hex>) --from <tree_size> --until <tree_size> [--reason szoveg]';
+    if (!flags['log-id'] || !flags.from || !flags.until) die(usage);
+    if (!flags.suspended && !flags['suspended-fingerprint']) die(usage);
+    let body;
+    try {
+      body = succ.buildWitnessSuspensionBody({
+        log_id: flags['log-id'],
+        suspended_fingerprint: flags['suspended-fingerprint'] ||
+          succ.keyFingerprint(readFileOrDie(flags.suspended, 'felfuggesztendo witness publikus kulcs')),
+        suspended_from_tree_size: Number(flags.from),
+        suspended_until_tree_size: Number(flags.until),
+        reason: flags.reason
+      });
+    } catch (e) { die('HIBA: ' + e.message); }
+    process.stdout.write(JSON.stringify(body) + '\n');
+    process.exit(0);
+  }
   if (kind === 'root-successor') {
     // utod trust-root torzse: az elod fajl lehet rekord vagy lanc (az utolso
     // elem az elod); a leiro JSON: { providers, logs, root_keys | root_public_key, threshold }
@@ -362,7 +432,7 @@ if (cmd === 'body') {
     process.stdout.write(JSON.stringify(body) + '\n');
     process.exit(0);
   }
-  die('Hasznalat: node axr-key-succession.js body <succession|revocation|witness-revocation|root-successor> ...');
+  die('Hasznalat: node axr-key-succession.js body <succession|revocation|witness-revocation|witness-suspension|root-successor> ...');
 }
 
 // ── sign: egy alairo reszalairasa egy body folott ──────────────────────────────
@@ -411,11 +481,13 @@ if (cmd === 'assemble') {
       ? succ.verifyKeyRevocation(record, anchor)
       : record.record_type === 'witness_revocation'
         ? succ.verifyWitnessRevocation(record, anchor)
-        : record.record_type === 'witness_set'
-          ? succ.verifyWitnessSet(record, anchor)
-          : record.record_type === 'key_succession'
-            ? succ.verifyKeySuccession(record, anchor)
-            : { ok: false, problems: ['assemble --verify: ismeretlen record_type: ' + record.record_type] };
+        : record.record_type === 'witness_suspension'
+          ? succ.verifyWitnessSuspension(record, anchor)
+          : record.record_type === 'witness_set'
+            ? succ.verifyWitnessSet(record, anchor)
+            : record.record_type === 'key_succession'
+              ? succ.verifyKeySuccession(record, anchor)
+              : { ok: false, problems: ['assemble --verify: ismeretlen record_type: ' + record.record_type] };
     if (!res.ok) die('HIBA: az osszefesult rekord NEM verifikal: ' + res.problems.join('; '), 1);
     console.error('assemble: a rekord a megadott horgonnyal ERVENYES (' + record.signatures.length + ' alairas).');
   } else {

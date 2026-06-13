@@ -51,6 +51,7 @@ const MAPPING = {
   WITNESS_COSIGNATURE_INVALID: { severity_id: 5, title: 'AXR ervenytelen/nem-deklaralt witness-cosignature az STH-n' },
   WITNESS_SET_AMBIGUOUS:    { severity_id: 5, title: 'AXR utkozo witness_set policy (azonos effective_from) - fail-closed' },
   WITNESS_REVOKED:          { severity_id: 5, title: 'AXR revokalt witness cosignature-je az STH-n a hatar utan' },
+  WITNESS_SUSPENDED:        { severity_id: 1, title: 'AXR ideiglenesen felfuggesztett witness cosignature-je (joindulatu, auto-lejaro)' },
   EMBEDDED_BYPASS:          { severity_id: 5, title: 'AXR embedded_succession a control log megkerulesevel (1.0 governance cleanup)' },
   CONTROL_ROOT_MISMATCH:    { severity_id: 4, title: 'AXR control-commitment nem egyezik a publikalt control loggal' },
   UNDER_WITNESSED:          { severity_id: 3, title: 'AXR STH a witness-kuszob alatt (--require-witnesses)' },

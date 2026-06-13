@@ -159,6 +159,21 @@ kötelező (különben reject). axr-sdk-verify.js + axr-sdk-verify-test.js (9 á
 benne a CLI-exitkód non-divergencia keresztcheck), surface-pin + AXR-SDK.md +
 README. 39 suite zöld. Release: v1.3.0.
 
+## 1.4 — KÉSZ (2026-06-13): witness-felfüggesztés (ideiglenes, auto-lejáró)
+
+Additív, az 1.1 witness-revokáció párja a TEMPORÁLIS esetre. `witness_suspension`
+(kvórum/root-aláírt control-rekord) egy witnesst egy fél-nyílt [from, until)
+tree_size-ablakra kizár; until-tól AUTOMATIKUSAN újra számít (nincs új
+witness_set). Kulcskülönbség a revokációtól: a felfüggesztés JÓINDULATÚ → az
+ablakban a cosig nem számít, de a jelenléte NOTICE (`WITNESS_SUSPENDED`), NEM
+violation. A threshold nem csökken → küszöb alá esve UNDER_WITNESSED (until-nál
+helyreáll). REVOKÁCIÓ-PRECEDENCIA: revoked+suspended fingerprint → WITNESS_REVOKED
+(a kompromittálódás-jelzés sosem degradálódik). Szállítva: succession-primitívek
++ suspendedWitnessesAt, control-típus, monitor + JS/Python verifier (a Python
+verdikt-only: nem írja ki a notice-t, de nem is számolja), OCSF (severity 1),
+CLI (suspend-witness + body witness-suspension), AXR-SPEC-1.4.md, 27-állításos
+teszt. Meridian+NEXUS keresztreview. 40 suite zöld. Release: v1.4.0.
+
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 
 Scope: AXR-0.8-SCOPE.md (Meridian+NEXUS review). Megelőző equivocation-védelem:
