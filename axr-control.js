@@ -48,6 +48,68 @@ function controlRoot(records) {
   return core.merkleRootFromLeaves((records || []).map(core.leafHash));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 1.5 - Reszleges control-disclosure (egyetlen governance-rekord bizonyitasa)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Eddig a control logot EGESZBEN kellett terjeszteni ahhoz, hogy egy fogyaszto
+// ellenorizhesse az STH control_root_hash-commitmentjet. Az 1.5 egy holdernek
+// lehetove teszi, hogy EGYETLEN governance-rekordrol (pl. egy witness_revocation)
+// bizonyitsa: az STH altal commitolt control-faban benne van - a TOBBI rekord
+// felfedese NELKUL (adatvedelem/skalazas). RFC 6962 inclusion proof a control-fan,
+// a receiptekkel azonos gepezet. Off-wire bizonyitek (nincs uj rekordtipus, nincs
+// verzio-kapu); a wire formatot nem erinti.
+//
+// A teljes bizalmi lanc egy auditornak:
+//   1. STH op-alairasa ervenyes (a control_root_hash-t az operator alairta)
+//   2. a disclosure inclusion proofja az STH control_root_hash-ara verifikal
+//      (a rekord BENNE van a commitolt control-faban, az adott pozicion)
+//   3. (opc.) verifyControlRecord(record, trustRoot): a rekord root-autorizalt
+// Egyutt: "ez a root-autorizalt governance-rekord a logban van, ezen a control-
+// pozicion" - a control log tobbi reszenek megmutatasa nelkul.
+
+// buildControlDisclosure(controlRecords, index) -> egyetlen rekord disclosure-je.
+//   -> { record, leaf_index, control_size, inclusion_proof: [..], control_root_hash }
+function buildControlDisclosure(controlRecords, index) {
+  if (!Array.isArray(controlRecords) || !controlRecords.length) throw new Error('control-disclosure: ures control-rekordlista');
+  if (!Number.isInteger(index) || index < 0 || index >= controlRecords.length)
+    throw new Error('control-disclosure: index a [0, ' + controlRecords.length + ') tartomanyon kivul');
+  const leaves = controlRecords.map(core.leafHash);
+  return {
+    record: controlRecords[index],
+    leaf_index: index,
+    control_size: controlRecords.length,
+    inclusion_proof: core.inclusionProof(index, leaves),
+    control_root_hash: core.merkleRootFromLeaves(leaves)
+  };
+}
+
+// verifyControlDisclosure(disclosure, expectedControlRootHash?) -> { ok, problems }
+// Ha expectedControlRootHash (az STH-bol) meg van adva, a disclosure
+// control_root_hash-anak EGYEZNIE kell vele (kulonben egy tamado sajat fat
+// allithatna ossze). Az inclusion proof a rekord leveléből az (egyeztetett)
+// gyokerig vezet. A rekord ROOT-autorizaltsaga kulon ellenorzes (verifyControlRecord).
+function verifyControlDisclosure(disclosure, expectedControlRootHash) {
+  const problems = [];
+  if (!disclosure || typeof disclosure !== 'object') return { ok: false, problems: ['nem objektum'] };
+  const { record, leaf_index, control_size, inclusion_proof } = disclosure;
+  if (record == null || typeof record !== 'object') problems.push('hianyzo/ervenytelen record');
+  if (!Number.isInteger(leaf_index) || leaf_index < 0) problems.push('ervenytelen leaf_index');
+  if (!Number.isInteger(control_size) || control_size < 1) problems.push('ervenytelen control_size');
+  if (leaf_index >= control_size) problems.push('leaf_index >= control_size');
+  if (!Array.isArray(inclusion_proof)) problems.push('hianyzo inclusion_proof');
+  if (typeof disclosure.control_root_hash !== 'string') problems.push('hianyzo control_root_hash');
+  if (problems.length) return { ok: false, problems };
+  // ha az auditor egy MEGBIZHATO (STH-bol vett) gyokeret ad, annak egyeznie kell
+  const root = expectedControlRootHash != null ? expectedControlRootHash : disclosure.control_root_hash;
+  if (expectedControlRootHash != null && disclosure.control_root_hash !== expectedControlRootHash)
+    problems.push('a disclosure control_root_hash-a NEM egyezik az STH commitmentjevel (' +
+      String(disclosure.control_root_hash).slice(0, 16) + '... != ' + String(expectedControlRootHash).slice(0, 16) + '...)');
+  const leaf = core.leafHash(record);
+  if (!core.verifyInclusion(leaf, leaf_index, control_size, inclusion_proof, root))
+    problems.push('az inclusion proof NEM verifikal a control_root_hash-ra (a rekord nincs a commitolt control-faban ezen a pozicion)');
+  return { ok: problems.length === 0, problems };
+}
+
 // Egy control-rekord strukturalis + kriptografiai ellenorzese a root-horgonnyal.
 // A sidecar EZT futtatja commit elott (Meridian-kikotes: ervenytelen
 // governance-anyag NEM anchorolhato), es a fogyasztok is ezt hasznaljak.
@@ -160,5 +222,7 @@ module.exports = {
   verifyControlRecord,
   verifyControlLog,
   checkSthCommitment,
-  checkControlConsistency
+  checkControlConsistency,
+  buildControlDisclosure,
+  verifyControlDisclosure
 };

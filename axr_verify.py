@@ -520,6 +520,32 @@ def control_root(records):
     return mth([leaf_hash(r) for r in (records or [])])
 
 
+def verify_control_disclosure(disclosure, expected_root=None):
+    # 1.5: egy reszleges control-disclosure ellenorzese (tukor a JS
+    # axr-control.verifyControlDisclosure). A rekord inclusion proofja az
+    # (egyeztetett) control_root_hash-ra vezet. -> True/False.
+    if not isinstance(disclosure, dict):
+        return False
+    rec = disclosure.get("record")
+    idx = disclosure.get("leaf_index")
+    size = disclosure.get("control_size")
+    proof = disclosure.get("inclusion_proof")
+    own_root = disclosure.get("control_root_hash")
+    if not isinstance(rec, dict) or not isinstance(idx, int) or isinstance(idx, bool):
+        return False
+    if not isinstance(size, int) or isinstance(size, bool) or size < 1 or idx < 0 or idx >= size:
+        return False
+    if not isinstance(proof, list) or not isinstance(own_root, str):
+        return False
+    root = expected_root if expected_root is not None else own_root
+    if expected_root is not None and own_root != expected_root:
+        return False
+    try:
+        return root_from_inclusion(leaf_hash(rec), idx, size, proof) == root
+    except Exception:
+        return False
+
+
 def check_sth_commitment(sth, records):
     # -> (committed, ok, withheld). Tukor a JS axr-control.checkSthCommitment.
     has_root = isinstance(sth.get("control_root_hash"), str)

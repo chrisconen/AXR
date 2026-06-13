@@ -171,8 +171,24 @@ helyreáll). REVOKÁCIÓ-PRECEDENCIA: revoked+suspended fingerprint → WITNESS_
 (a kompromittálódás-jelzés sosem degradálódik). Szállítva: succession-primitívek
 + suspendedWitnessesAt, control-típus, monitor + JS/Python verifier (a Python
 verdikt-only: nem írja ki a notice-t, de nem is számolja), OCSF (severity 1),
-CLI (suspend-witness + body witness-suspension), AXR-SPEC-1.4.md, 27-állításos
-teszt. Meridian+NEXUS keresztreview. 40 suite zöld. Release: v1.4.0.
+CLI (suspend-witness + body witness-suspension), AXR-SPEC-1.4.md, 29-állításos
+teszt. Meridian+NEXUS keresztreview (fix: suspension-minősítés csak deklarált+érvényes
+aláírásra). 40 suite zöld. Release: v1.4.0.
+
+## 1.5 — KÉSZ (2026-06-13): partial control-disclosure
+
+Additív, OFF-WIRE (nincs új rekordtípus/wire-mező/verzió-kapu; a log írása/verify-je
+változatlan). A 0.7-ből halasztott „inclusion proof a control-fán". Egy holder
+bizonyíthatja, hogy EGY governance-rekord benne van a control-fában (RFC 6962
+inclusion az STH control_root_hash-ára), a TÖBBI rekord felfedése nélkül.
+`control.buildControlDisclosure` / `verifyControlDisclosure` (a receiptekkel azonos
+leaf/Merkle gépezet); auditor-lánc: STH-aláírás → disclosure-gyökér == STH
+commitment + inclusion → (opc.) rekord root-autorizált. CLI: `control prove` +
+`control verify-inclusion`. SDK-pin + Python-tükör (`verify_control_disclosure`,
+cross-impl parity). 26-állításos teszt. 41 suite zöld. Meridian+NEXUS review
+(GO; fixek: a verify-inclusion `--key` KÖTELEZŐ + log_id-szűrés + a teljes signed
+commitment — control_root_hash ÉS control_size — kötése, aláírásilag érvényes
+STH-választás). Release: v1.5.0.
 
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 

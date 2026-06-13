@@ -77,9 +77,12 @@ Witnesses (0.8/1.1): `buildWitnessSet`, `verifyWitnessSet`,
 **programmatic** integrity check over an STH stream (signatures, append-only,
 split-view, governance, witnesses). `compareJournals(a, b)`.
 
-### `axr.control` — control log (0.7)
+### `axr.control` — control log (0.7) + partial disclosure (1.5)
 `verifyControlRecord`, `verifyControlLog`, `controlRoot`, `checkSthCommitment`,
-`checkControlConsistency`.
+`checkControlConsistency`, and (1.5) `buildControlDisclosure` /
+`verifyControlDisclosure` — prove one governance record is committed in the
+control tree (RFC 6962 inclusion against the STH's `control_root_hash`) without
+revealing the rest of the log.
 
 ### `axr.ocsf`, `axr.report`, `axr.generator`, `axr.journalReceipts`, `axr.webhook`
 SIEM export (`toDetectionFindings`), human-readable compliance report

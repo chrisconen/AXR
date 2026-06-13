@@ -587,7 +587,89 @@ if (cmd === 'control') {
     process.exit(0);
   }
 
-  die('Hasznalat: node axr-key-succession.js control <add|verify|status> ...');
+  // control prove <control.jsonl> <index> [--out fajl]
+  // Reszleges disclosure: egyetlen governance-rekord inclusion proofja a control-fan.
+  if (sub === 'prove') {
+    const positional = [];
+    const flags = {};
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+      else positional.push(rest[i]);
+    }
+    const [controlPath, idxStr] = positional;
+    if (!controlPath || idxStr == null)
+      die('Hasznalat: node axr-key-succession.js control prove <control.jsonl> <index> [--out fajl]');
+    const records = readJsonlOrDie(controlPath);
+    let disclosure;
+    try { disclosure = control.buildControlDisclosure(records, Number(idxStr)); }
+    catch (e) { die('HIBA: ' + e.message, 1); }
+    // onellenorzes: a most epitett disclosure verifikal a sajat gyokerere
+    const chk = control.verifyControlDisclosure(disclosure, disclosure.control_root_hash);
+    if (!chk.ok) die('HIBA: a felepitett disclosure nem verifikal: ' + chk.problems.join('; '), 1);
+    const out = JSON.stringify(disclosure) + '\n';
+    if (flags.out) { fs.writeFileSync(flags.out, out); console.error('control prove: disclosure (leaf_index=' + disclosure.leaf_index + '/' + disclosure.control_size + ') -> ' + flags.out); }
+    else process.stdout.write(out);
+    process.exit(0);
+  }
+
+  // control verify-inclusion <disclosure.json> <sth.jsonl> --key <op-pub.pem> [--trust-root <horgony>]
+  // Egy disclosure ellenorzese az STH commitmentje ellen: a rekord BENNE van a
+  // commitolt control-faban - a teljes control log megmutatasa nelkul.
+  // NEXUS-review: a --key (operator PUBLIKUS kulcs) KOTELEZO - az STH-alairas
+  // nelkul a control_root_hash hiteltelen (egy holder sajat, alairatlan STH-t
+  // adhatna). Az STH-t a disclosure rekordjanak log_id-jara IS szurjuk.
+  if (sub === 'verify-inclusion') {
+    const positional = [];
+    const flags = {};
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+      else positional.push(rest[i]);
+    }
+    const [disclosurePath, sthPath] = positional;
+    const opKeyPath = flags.key || flags['op-key'] || flags.pubkey;   // mind az operator PUBLIKUS kulcsa
+    const usage = 'Hasznalat: node axr-key-succession.js control verify-inclusion <disclosure.json> <sth.jsonl> --key <op-pub.pem> [--trust-root <horgony>]';
+    if (!disclosurePath || !sthPath || !opKeyPath) die(usage);
+    const core = require('./axr-core');
+    let disclosure;
+    try { disclosure = JSON.parse(readFileOrDie(disclosurePath, 'disclosure')); }
+    catch (e) { die('HIBA: a disclosure ervenytelen JSON: ' + e.message); }
+    const recLogId = disclosure.record && disclosure.record.log_id;
+    if (!recLogId) die('HIBA: a disclosure rekordjabol hianyzik a log_id', 1);
+    const opPub = readFileOrDie(opKeyPath, 'op publikus kulcs');
+    const sths = readJsonlOrDie(sthPath).filter(r => r && r.record_type === 'sth');
+    // A commitolo STH jeloltjei: azonos log_id (a kozos sth.jsonl-ben levo, mas
+    // loghoz tartozo veletlen egyezes kizarasara) ES a TELJES signed commitment
+    // egyezese - control_root_hash ES control_size (Meridian-review: az STH a
+    // root MELLETT a size-t is alairja; mindkettot kotni kell a disclosure-hoz).
+    const candidates = sths.filter(s => s.log_id === recLogId &&
+      s.control_root_hash === disclosure.control_root_hash && s.control_size === disclosure.control_size);
+    if (!candidates.length) die('HIBA: nincs olyan STH (log_id=' + recLogId + '), aminek a control_root_hash-a ES control_size-a egyezik a disclosure-evel', 1);
+    // 1. STH op-alairas (KOTELEZO) - a commitment csak ettol megbizhato. A jeloltek
+    // kozul azt valasztjuk, amelyik alairasa ervenyes (Meridian-review: egy korabbi
+    // ervenytelen, de root-egyezo STH ne okozzon feleslegesen bukast).
+    const sth = candidates.find(s => core.verifyReceipt(s, opPub));
+    if (!sth) { console.log('Control-inclusion ERVENYTELEN:'); console.log('  egyetlen egyezo STH op-alairasa sem ervenyes (a control_root_hash hiteltelen)'); process.exit(1); }
+    let problems = [];
+    // 2. inclusion proof az STH (megbizhato) control_root_hash-ara
+    const inc = control.verifyControlDisclosure(disclosure, sth.control_root_hash);
+    if (!inc.ok) problems = problems.concat(inc.problems);
+    // 3. (opc.) a rekord root-autorizaltsaga
+    if (flags['trust-root']) {
+      const anchor = loadAnchorOrDie(flags['trust-root']);
+      const rv = control.verifyControlRecord(disclosure.record, anchor, recLogId);
+      if (!rv.ok) problems.push('a rekord NEM root-autorizalt: ' + rv.problems.join('; '));
+    }
+    if (problems.length) { console.log('Control-inclusion ERVENYTELEN:'); for (const p of problems) console.log('  ' + p); process.exit(1); }
+    console.log('Control-inclusion ERVENYES.');
+    console.log('  record_type:  ' + disclosure.record.record_type + '  (log_id: ' + recLogId + ')');
+    console.log('  pozicio:      leaf_index ' + disclosure.leaf_index + ' / control_size ' + disclosure.control_size);
+    console.log('  STH:          tree_size ' + sth.tree_size + ', control_root_hash ' + String(sth.control_root_hash).slice(0, 20) + '...');
+    console.log('  STH-alairas:  ERVENYES (operator publikus kulcs)');
+    if (flags['trust-root']) console.log('  root-auth:    a rekord root-autorizalt');
+    process.exit(0);
+  }
+
+  die('Hasznalat: node axr-key-succession.js control <add|verify|status|prove|verify-inclusion> ...');
 }
 
 die('Hasznalat: node axr-key-succession.js <build|verify|fingerprint|revoke|body|sign|assemble|control> ...');

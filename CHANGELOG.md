@@ -5,6 +5,51 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.5.0] - 2026-06-13
+
+Partial control-disclosure — prove one governance record is committed without
+revealing the rest of the control log. Additive and **off-wire**: no new record
+type, no wire field, no version gate, no change to how logs are written or
+verified. Closes the 0.7-deferred "inclusion proof on the control tree". Spec:
+`AXR-SPEC-1.5.md`. Meridian + NEXUS cross-review.
+
+### Added
+
+- **`control.buildControlDisclosure(records, index)` /
+  `control.verifyControlDisclosure(disclosure, expectedRoot?)`**
+  (`axr-control.js`): an RFC 6962 inclusion proof for a single control record
+  against the control tree, using the same leaf/Merkle machinery as receipt
+  inclusion. A disclosure is `{ record, leaf_index, control_size,
+  inclusion_proof, control_root_hash }` — it reveals only the one record. When
+  `expectedRoot` (from a trusted STH) is supplied, the disclosure's root must
+  equal it, so a holder cannot prove to a self-chosen tree.
+- **CLI** (`axr-key-succession.js control`): `prove <control.jsonl> <index>`
+  emits a disclosure; `verify-inclusion <disclosure.json> <sth.jsonl> [--key
+  op.pem] [--trust-root <anchor>]` runs the full auditor chain — STH signature
+  (`--key`) → disclosure root equals the STH `control_root_hash` + inclusion
+  verifies → record is root-authorized (`--trust-root`).
+- **SDK + cross-impl**: both functions pinned in the SDK surface test; the
+  Python verifier mirrors `verify_control_disclosure` (control-tree Merkle
+  inclusion is byte-identical across Node and Python).
+- **Tests** (`axr-control-disclosure-test.js`, 26 assertions incl. Python
+  parity): disclosure root equals a real anchored STH commitment; build→verify
+  for every index with the privacy property (only one record disclosed); tamper
+  / wrong-index / wrong-root / out-of-range / wrong-`log_id` / wrong-`control_size`
+  rejected; 1-element-tree edge case; CLI prove + verify-inclusion end-to-end
+  (tampered → exit 1, missing `--key` → exit 2).
+
+### Review fixes (Meridian + NEXUS cross-review, both no-blocker)
+
+- **`control verify-inclusion --key` is now required** (both reviewers): without
+  the operator STH signature the `control_root_hash` is unauthenticated, so a
+  holder could present a self-made unsigned STH. The STH signature is the anchor
+  of the trust chain and is always checked (`--op-key` / `--pubkey` aliases).
+- **The committing STH is selected by `log_id` + the full signed commitment
+  (`control_root_hash` *and* `control_size`)** (Meridian), and among matches the
+  one whose signature verifies is chosen (so a stray invalid STH earlier in a
+  shared `sth.jsonl` cannot cause a spurious failure). Binds both signed
+  commitment fields, not just the root.
+
 ## [1.4.0] - 2026-06-13
 
 Witness suspension — temporary, auto-expiring witness exclusion. Additive over
