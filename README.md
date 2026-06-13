@@ -313,6 +313,19 @@ node axr-verify.js receipts.jsonl pub.pem sth.jsonl anchors.jsonl \
 
 `WITNESS_COSIGNATURE_INVALID` (undeclared/invalid cosignature) and `WITNESS_SET_AMBIGUOUS` (conflicting policy) are always violations; `UNDER_WITNESSED` (below threshold) is a notice by default, a violation under `--require-witnesses` — so a live witness-less pilot is not broken on upgrade. Spec: `AXR-SPEC-0.8.md`. 42 assertions with Python cross-impl agreement. (Trust boundary: the witness's state store must be durable and non-rollbackable — see spec §5.)
 
+### Dogfooding — a continuous, machine-generated audit trail of autonomous work
+
+The general claim: when autonomous agents do work, you can authenticate and chain each decision *at the moment it happens*, so an auditor verifies the trail cryptographically instead of trusting an after-the-fact summary. AXR demonstrates this on its own construction — it was built by a three-AI workbench (Fable / Meridian / NEXUS) over a shared, append-only journal (`agents/journal.jsonl`), and that journal is turned into a verifiable AXR log. Each entry (who did what, why, when, which files) becomes a signed **journal-entry receipt**; the log is anchored into an STH; and that STH is **witness-cosigned by the two reviewer agents** (Meridian and NEXUS) — the same cross-review that caught eleven findings during the 0.5–1.0 build, now expressed as literal witness cosignatures. It verifies under the full 1.0 stack:
+
+```bash
+npm run dogfood        # regenerate live against the current journal (ephemeral keys)
+# or verify the committed frozen snapshot:
+node axr-verify.js devlog/receipts.jsonl devlog/op.pubkey.pem devlog/sth.jsonl devlog/anchors.jsonl \
+  --trust-root devlog/trust-root.json --control devlog/control.jsonl --require-witnesses
+```
+
+**Honest framing (this is the point, not a gimmick).** This proves the journal has not been altered since signing — if an AI wrote a mistake, it proves it *really wrote that, then*, and nobody edited it out afterwards. It does **not** prove any entry was *true* when written (N1). And the local snapshot **simulates** independent witness custody (keys on one machine); in production the witnesses run in separate security zones — that is what makes the zero-trust property real. AXR is a tool in the human auditor's hand to hold autonomous AI systems accountable, not a system that governs itself. See `devlog/README.md`.
+
 ### Compliance Report Generator — the auditor's view
 
 An auditor does not read JSONL and Merkle trees at the command line. `axr-report.js` turns a log into a self-contained, human-auditable **HTML** (or JSON) report: log overview, signature & anchoring integrity, the **key-governance timeline** (genesis → successions → revocations, the active key per role, authorized/revoked flags), the control-log commitment summary, privacy/side-effect counts, and an **EU AI Act Art.12 / GDPR control mapping** (drawn from COMPLIANCE.md, with the honest caveats).

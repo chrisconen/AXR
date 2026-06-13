@@ -5,6 +5,31 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.0.1] - 2026-06-13
+
+Additive tooling on top of the frozen 1.0 contract (no protocol change): AXR
+demonstrated on real, non-fixture data — its own development journal.
+
+### Added
+
+- **Dogfooding: a verifiable AXR log of AXR's own development**
+  (`axr-journal-receipts.js` + `axr-dogfood.js`; `npm run dogfood`; frozen
+  snapshot in `devlog/`). The three-AI workbench journal (`agents/journal.jsonl`)
+  becomes signed journal-entry receipts, anchored into an STH, and
+  witness-cosigned by the two reviewer agents (Meridian, NEXUS) — the
+  cross-review that caught eleven findings during 0.5–1.0, now expressed as
+  literal witness cosignatures. Runs the full 1.0 stack (anchor → monitor →
+  JS + Python verifier, `--require-witnesses`) on real data. 10 assertions
+  incl. determinism, content-binding (a journal edit breaks the receipt), and
+  the committed frozen snapshot verifying under both verifiers.
+- **Honest framing throughout** (per Meridian/NEXUS review): receipts prove the
+  journal is unaltered since signing, **not** that entries were true when
+  written (N1); the local snapshot **simulates** independent witness custody
+  (production runs witnesses in separate security zones); framed as a
+  machine-generated audit trail / a tool in the human auditor's hand, not "AI
+  self-governance". No private keys committed (only public keys + the signed
+  artifact). See `devlog/README.md`.
+
 ## [1.0.0] - 2026-06-13
 
 Maturity declaration — not a new layer. 1.0 consolidates 0.2–0.8 into one
