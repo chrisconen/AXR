@@ -147,10 +147,20 @@ AXR proves a record was not altered, suppressed, or backdated after the fact —
 - **additive fields are permitted**; an unknown field on a non-trust-critical
   path is ignored, an unknown record type on the control channel is fail-closed.
 
-**Parity guarantee:** the Python verifier matches the JS verifier on
-exit-code/verdict (including for `witness_revocation`, `witness_suspension`, and
-control disclosures); soft-notice *output* parity is not guaranteed (Python is
-verdict-only by design).
+**Parity guarantee (scoped precisely).** The Python verifier is the cross-impl
+proof of the **cryptographic core + governance**: signatures, all hash chains,
+`chain_root`/`step_chain`, RFC 6962 inclusion + consistency, the STH chain, the
+rotation-spanning key timeline + revocation, the control-log commitment, the full
+witness lifecycle (cosigning, `witness_revocation` 1.1, `witness_suspension` 1.4),
+and control disclosure (1.5). Verdict parity on these is guaranteed and
+test-locked. **Not** part of the parity guarantee: the niche 0.3/0.4 semantic
+checks — redactable-commitment integrity, side-effect attestation, generative
+well-formedness, evidence-graph integrity, and the online anchor cross-check —
+which are **JS-only by design** (`axr-verify.js` is their reference;
+`axr_verify.py` exits on core validity and says so in its header). Soft-notice
+*output* parity is also not guaranteed (Python is verdict-only). A log that JS
+rejects solely on a JS-only niche check may therefore exit 0 in Python — the
+cross-impl claim is about the trust-critical core, not every semantic rule.
 
 ## 10. Verifier checks (current)
 

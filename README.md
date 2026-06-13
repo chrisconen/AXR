@@ -34,7 +34,7 @@ AXR is zero-dependency Node (>=18) + a zero-dependency Python verifier. No insta
 
 ```bash
 git clone https://github.com/chrisconen/AXR && cd AXR
-npm test            # 35 suites incl. JS<->Python cross-impl parity
+npm test            # 41 suites incl. JS<->Python cross-impl parity
 ```
 
 **Generate a key, build a tiny signed log, verify it:**
@@ -370,6 +370,8 @@ The credibility of Certificate Transparency came from *multiple independent impl
 - **Canonicalization parity**: a battery of values (integers, floats, `1e21`, unicode, emoji, nested objects) canonicalizes to byte-identical output in JS and Python.
 - **Agreement on valid**: both verifiers accept the same anchored log (exit 0).
 - **Agreement on tampered**: both reject the same mutated logs (exit 1).
+
+**Scope, stated precisely (this matters):** the Python verifier is the cross-impl proof of the **cryptographic core + governance** — signatures, all hash chains, `chain_root`/`step_chain`, RFC 6962 inclusion + consistency, the STH chain, the rotation-spanning key timeline + revocation, the control-log commitment, and the full witness lifecycle (cosigning, revocation, suspension) and control-disclosure. Verdict parity on these is guaranteed and test-locked (each feature's suite cross-checks Python). The **niche 0.3/0.4 semantic checks** — redactable-commitment integrity, side-effect attestation, generative well-formedness, evidence-graph integrity, and the online anchor cross-check — are **JS-only by design** (`axr-verify.js` is their reference); `axr_verify.py` states this in its header and exits on core validity. So "two verifiers agree" is a guarantee about the trust-critical core, not a claim that Python re-checks every JS-only semantic rule.
 
 ```bash
 python3 axr_verify.py receipts.jsonl public-key.pem sth.jsonl anchors.jsonl
