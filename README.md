@@ -58,6 +58,24 @@ Producing receipts inside an automated workflow: drop `axr-n8n-node.js` into an 
 
 The CLIs are also exposed as `bin` entries (`axr-verify`, `axr-anchor`, `axr-monitor`, `axr-key-succession`, `axr-witness`, `axr-report`, `axr-rollout`).
 
+### Use AXR as a library (frozen SDK surface, 1.2+)
+
+`require('axr')` returns one documented entry point whose names and shapes are **frozen for 1.x** (it may grow additively, but documented names will not be renamed or removed). Zero runtime dependencies, Node ≥ 18.
+
+```js
+const axr = require('axr');
+
+receipt.signature = axr.sign(receipt, privateKeyPem);     // Ed25519 over the signable part
+const ok = axr.verifyReceipt(receipt, publicKeyPem);      // true / false
+const h  = axr.sha256(value);                             // "sha256:<hex>" over canonical bytes
+
+// namespaced surface: axr.core, axr.governance, axr.anchor, axr.monitor,
+// axr.control, axr.ocsf, axr.report, axr.generator, axr.journalReceipts, axr.webhook
+const res = axr.monitor.pollMonitor(opts);                // programmatic integrity check
+```
+
+Full surface and the 1.x stability policy: **`AXR-SDK.md`**. The pinning test `axr-sdk-surface-test.js` keeps the surface honest. (Full-log verification stays the `bin/axr-verify` CLI; programmatic checking is `axr.monitor.pollMonitor`.)
+
 ---
 
 ## The problem

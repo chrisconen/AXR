@@ -132,6 +132,22 @@ witness-governance-re (trust boundary). Release: v1.1.0.
 Halasztva 1.1-ből: witness-felfüggesztés (auto-expiry), witness self-revokáció,
 recovery teljes lifecycle-e2e (unit + spec fedi).
 
+## 1.2 — KÉSZ (2026-06-13): fagyasztott publikus JS SDK-felület
+
+Additív, nem-protokoll (nincs wire/CLI/viselkedés-változás). Teljesíti az 1.0
+ígéretét, hogy a JS modul-export az 1.x-re fagy. `index.js` az EGYETLEN
+dokumentált belépési pont (`package.json main`): top-level kényelmi fgv-ek
+(version, canonicalize, sha256, sign/signReceipt, verifyReceipt, keyFingerprint)
++ nevterek (core, governance, anchor, monitor, control, ocsf, report, generator,
+journalReceipts, webhook). A `core` top-level is spreadelve → a pre-1.2
+`main: axr-core.js` szerződés NEM törik. Stabilitás-policy: AXR-SDK.md (a
+dokumentált nevek 1.x-ben fagyottak, csak additív bővülés). A CLI-only
+axr-verify.js/axr-trust-root.js (require-re futnak) NEM része az SDK-nak; a
+teljes-log verify a bin/axr-verify, programozottan a monitor.pollMonitor.
+`axr-sdk-surface-test.js` (86 állítás) pinneli a felületet + SDK-n átmenő
+smoke-test. Release: v1.2.0. (Nem-protokoll lévén review nélkül, a pinning-teszt
+a garancia.)
+
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 
 Scope: AXR-0.8-SCOPE.md (Meridian+NEXUS review). Megelőző equivocation-védelem:

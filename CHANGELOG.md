@@ -5,6 +5,38 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.2.0] - 2026-06-13
+
+Frozen public JavaScript SDK surface — additive (no wire-format, CLI, or
+behaviour change). Fulfils the 1.0 commitment that the JS module export would
+be frozen by the 1.x line. Doc: `AXR-SDK.md`.
+
+### Added
+
+- **`index.js` — the single documented SDK entry point** (`package.json` `main`).
+  `require('axr')` returns a curated, stable surface: top-level conveniences
+  (`version`, `canonicalize`, `sha256`, `sign`/`signReceipt`, `verifyReceipt`,
+  `keyFingerprint`) plus namespaces (`core`, `governance`, `anchor`, `monitor`,
+  `control`, `ocsf`, `report`, `generator`, `journalReceipts`, `webhook`). The
+  full `core` surface is also spread at top level, so the pre-1.2 `main`
+  (`axr-core.js`) contract is preserved — this change is non-breaking.
+- **1.x JS stability policy** (`AXR-SDK.md`): the documented names/shapes are
+  frozen for 1.x and may only grow additively; internal helpers reachable
+  through a namespace but not documented are not frozen. Distinct from the
+  `AXR-SPEC-1.0.md` wire/CLI freeze.
+- **`axr-sdk-surface-test.js`** (86 assertions): pins every documented top-level
+  name and namespace function (a rename/removal turns it red) and runs an
+  end-to-end smoke test through the SDK (sign→verify, trust-root, witness_set +
+  cosign + witness_revocation two-tier rule, control-log verify).
+
+### Notes
+
+- The CLI-only scripts `axr-verify.js` and `axr-trust-root.js` (which execute on
+  require) are intentionally **not** part of the SDK; full-log verification stays
+  the `bin/axr-verify` CLI, and programmatic integrity checking is
+  `monitor.pollMonitor`. A unified `axr.verify()` wrapper is a candidate additive
+  1.x extension.
+
 ## [1.1.0] - 2026-06-13
 
 Emergency witness-revocation — additive over the frozen 1.0 contract (one new

@@ -1,6 +1,6 @@
 {
   "name": "axr",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Agent Execution Receipt - tamper-evident, cryptographically signed execution records for automated workflows and AI agents.",
   "license": "MIT",
   "author": "Conen Digital",
@@ -23,7 +23,7 @@
     "accountability",
     "opentimestamps"
   ],
-  "main": "axr-core.js",
+  "main": "index.js",
   "bin": {
     "axr-verify": "axr-verify.js",
     "axr-anchor": "axr-anchor.js",
@@ -34,6 +34,7 @@
     "axr-witness": "axr-witness.js"
   },
   "files": [
+    "index.js",
     "axr-core.js",
     "axr-generator.js",
     "axr-n8n-node.js",
@@ -61,6 +62,7 @@
     "AXR-SPEC-0.8.md",
     "AXR-SPEC-1.0.md",
     "AXR-SPEC-1.1.md",
+    "AXR-SDK.md",
     "fixtures/legacy-0.2.jsonl",
     "fixtures/legacy-0.2.pubkey.pem",
     "COMPLIANCE.md",
