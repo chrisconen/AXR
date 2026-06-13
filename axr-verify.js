@@ -49,6 +49,7 @@ const fs = require('fs');
 const https = require('https');
 const core = require('./axr-core');
 const succ = require('./axr-succession');
+const control = require('./axr-control');
 
 // Hasznalat:
 //   node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]
@@ -74,7 +75,7 @@ const succ = require('./axr-succession');
 function parseArgs(argv) {
   const positional = [];
   const flags = { strict: false, online: false, sthKey: null, trustRoot: null,
-                  successions: null, revocations: null, logId: null };
+                  successions: null, revocations: null, control: null, logId: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--strict') flags.strict = true;
@@ -83,6 +84,7 @@ function parseArgs(argv) {
     else if (a === '--trust-root') flags.trustRoot = argv[++i];
     else if (a === '--successions') flags.successions = argv[++i];
     else if (a === '--revocations') flags.revocations = argv[++i];
+    else if (a === '--control') flags.control = argv[++i];
     else if (a === '--log-id') flags.logId = argv[++i];
     else if (a.startsWith('--')) { console.error('ismeretlen kapcsolo: ' + a); process.exit(2); }
     else positional.push(a);
@@ -94,7 +96,7 @@ const [logPath, keyPath, sthPath, anchorPath] = _pos;
 if (!logPath || !keyPath) {
   console.error('Hasznalat: node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]\n' +
     '            [--strict] [--sth-key <pem>] [--trust-root <json>] [--online]\n' +
-    '            [--successions <jsonl>] [--revocations <jsonl>] [--log-id <id>]');
+    '            [--successions <jsonl>] [--revocations <jsonl>] [--control <jsonl>] [--log-id <id>]');
   process.exit(2);
 }
 
@@ -193,6 +195,21 @@ if (ARGS.revocations) {
   }
   if (!trustRoot) {
     console.error('HIBA: a --revocations csak --trust-root mellett hasznalhato');
+    process.exit(2);
+  }
+}
+// Control log (0.7): governance-rekordok + STH-commitment ellenorzes.
+let controlRecords = [];
+if (ARGS.control) {
+  try {
+    controlRecords = fs.readFileSync(ARGS.control, 'utf8')
+      .trim().split('\n').filter(Boolean).map(JSON.parse);
+  } catch (e) {
+    console.error('HIBA: a --control nem olvashato/ervenytelen: ' + e.message);
+    process.exit(2);
+  }
+  if (!trustRoot) {
+    console.error('HIBA: a --control csak --trust-root mellett hasznalhato');
     process.exit(2);
   }
 }
@@ -490,22 +507,26 @@ function buildTimelineForRole(role) {
     pool.push(rec);
   };
   successionRecords.forEach((rec, i) => add(rec, `successions[${i + 1}. sor]`));
+  // 0.7: a control log governance-rekordjai ugyanabba a poolba (dedup)
+  controlRecords.forEach((rec, i) => add(rec, `control[${i + 1}. sor]`));
   if (role === 'sth')
     for (const sth of sths)
       if (sth.embedded_succession) add(sth.embedded_succession, `STH (tree_size=${sth.tree_size}) embedded_succession`);
   // revokaciok (0.6): root-verifikalt, log-egyezo rekordok a timeline-ra
   const revPool = [];
   const seenRev = new Set();
-  revocationRecords.forEach((rec, i) => {
+  const addRev = (rec, src) => {
     if (!rec || rec.record_type !== 'key_revocation' || rec.role !== role) return;
     const h = sha256(rec);
     if (seenRev.has(h)) return;
     seenRev.add(h);
     const v = succ.verifyKeyRevocation(rec, trustRoot);
-    if (!v.ok) { problem(`revocations[${i + 1}. sor]: a key_revocation NEM verifikal: ${v.problems.join('; ')}`); return; }
-    if (rec.log_id !== effLogId) { problem(`revocations[${i + 1}. sor]: idegen loghoz tartozik (${rec.log_id})`); return; }
+    if (!v.ok) { problem(`${src}: a key_revocation NEM verifikal: ${v.problems.join('; ')}`); return; }
+    if (rec.log_id !== effLogId) { problem(`${src}: idegen loghoz tartozik (${rec.log_id})`); return; }
     revPool.push(rec);
-  });
+  };
+  revocationRecords.forEach((rec, i) => addRev(rec, `revocations[${i + 1}. sor]`));
+  controlRecords.forEach((rec, i) => addRev(rec, `control[${i + 1}. sor]`));
   const tl = succ.buildKeyTimeline(genesisPem, pool, role, trustRoot, revPool);
   for (const p of tl.problems) notice(`kulcs-idovonal (${role}): ${p}`);
   // elore letrehozott kulcs-objektumok (ne minden receiptnel parse-oljunk PEM-et)
@@ -586,6 +607,32 @@ if (sths.length) {
         if (!ok)
           problem(`STH ${m} -> ${n}: a consistency proof MEGBUKOTT - az ujabb fa NEM az append-only bovitese a reginek (atiras/forkolas jele)`);
       }
+    }
+  }
+
+  // ── 16. (0.7) Control-log commitment ─────────────────────────────────────────
+  // Ha --control adott, minden commitolo STH-t a tenyleges control log ellen
+  // ellenorzunk, es a commitolo STH-k kozott append-only-t. A verifier offline
+  // (a fajlok kezben vannak), igy a withheld AZONNAL fail-closed - nincs
+  // lag-turelem (az a monitor poll-modelljee). DOWNGRADE: a legnagyobb fa-meretu
+  // STH nem commitol, de egy kisebb igen.
+  if (ARGS.control) {
+    const committed = sorted.filter(t => typeof t.control_root_hash === 'string');
+    const top = sorted[sorted.length - 1];
+    if (committed.length && !(typeof top.control_root_hash === 'string'))
+      problem(`CONTROL_DOWNGRADE: a legnagyobb STH (tree_size=${top.tree_size}) nem commitol control-keszletet, de egy kisebb igen`);
+    let prevC = null;
+    for (const sth of committed) {
+      const chk = control.checkSthCommitment(sth, controlRecords);
+      if (chk.withheld)
+        problem(`CONTROL_WITHHELD: STH (tree_size=${sth.tree_size}): ${chk.problems.join('; ')}`);
+      else if (!chk.ok)
+        problem(`CONTROL_ROOT_MISMATCH: STH (tree_size=${sth.tree_size}): ${chk.problems.join('; ')}`);
+      if (prevC) {
+        const cc = control.checkControlConsistency(prevC, sth, controlRecords);
+        for (const p of cc.problems) problem(`CONTROL_NON_APPEND_ONLY: STH ${prevC.tree_size} -> ${sth.tree_size}: ${p}`);
+      }
+      prevC = sth;
     }
   }
 }

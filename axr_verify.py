@@ -510,6 +510,43 @@ def genesis_key(tr, log_id, role):
     return None
 
 
+def control_root(records):
+    # RFC 6962 Merkle a control-rekordok felett (tukor a JS axr-control.controlRoot)
+    return mth([leaf_hash(r) for r in (records or [])])
+
+
+def check_sth_commitment(sth, records):
+    # -> (committed, ok, withheld). Tukor a JS axr-control.checkSthCommitment.
+    has_root = isinstance(sth.get("control_root_hash"), str)
+    has_size = isinstance(sth.get("control_size"), int) and not isinstance(sth.get("control_size"), bool)
+    if not has_root and not has_size:
+        return (False, True, False)
+    if has_root != has_size:
+        return (True, False, False)
+    size = sth["control_size"]
+    avail = len(records or [])
+    if size < 0:
+        return (True, False, False)
+    if size > avail:
+        return (True, False, True)  # withheld
+    return (True, control_root((records or [])[:size]) == sth["control_root_hash"], False)
+
+
+def check_control_consistency(prev_sth, cur_sth, records):
+    # -> problemak szama (0 = ok). Tukor a JS checkControlConsistency.
+    m, n = prev_sth["control_size"], cur_sth["control_size"]
+    if n < m:
+        return 1
+    if m == n:
+        return 0 if prev_sth["control_root_hash"] == cur_sth["control_root_hash"] else 1
+    if n <= len(records or []):
+        leaves = [leaf_hash(r) for r in records[:n]]
+        proof = consistency_proof(m, leaves)
+        if not verify_consistency(m, n, prev_sth["control_root_hash"], cur_sth["control_root_hash"], proof):
+            return 1
+    return 0
+
+
 def verify_key_revocation(r, root_anchor):
     # key_revocation rekord ellenorzese (tukor a JS verifyKeyRevocation-hoz).
     if not isinstance(r, dict) or r.get("record_type") != "key_revocation":
@@ -609,7 +646,8 @@ def read_jsonl(path):
 
 
 def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
-           trust_root=None, successions=None, log_id=None, revocations=None):
+           trust_root=None, successions=None, log_id=None, revocations=None,
+           control_records=None):
     # sth_pub_raw: ha adott, az STH-alairasokat KIZAROLAG ezzel ellenorizzuk
     sth_key = sth_pub_raw if sth_pub_raw is not None else pub_raw
     problems = []
@@ -637,7 +675,9 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                 eff_log = trust_root["logs"][0].get("log_id")
             pool = []
             seen = set()
+            # 0.7: a control log governance-rekordjai ugyanabba a poolba (dedup)
             for src, rec in ([("successions", s) for s in (successions or [])] +
+                             [("control", s) for s in (control_records or [])] +
                              [("embedded", s.get("embedded_succession")) for s in sths
                               if s.get("embedded_succession")]):
                 if not isinstance(rec, dict) or rec.get("record_type") != "key_succession":
@@ -655,16 +695,22 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                       % (src, rec.get("log_id"), eff_log))
                     continue
                 pool.append(rec)
-            # revokaciok (0.6): root-verifikalt, log-egyezo rekordok
+            # revokaciok (0.6 + 0.7 control): root-verifikalt, log-egyezo rekordok
             rev_pool = []
-            for i, rec in enumerate(revocations or []):
+            seen_rev = set()
+            for src, rec in ([("revocations", r) for r in (revocations or [])] +
+                             [("control", r) for r in (control_records or [])]):
                 if not isinstance(rec, dict) or rec.get("record_type") != "key_revocation":
                     continue
+                h = sha256_str(rec)
+                if h in seen_rev:
+                    continue
+                seen_rev.add(h)
                 if not verify_key_revocation(rec, trust_root):
-                    P("revocations[%d]: a key_revocation NEM verifikal a root-horgonyra" % (i + 1))
+                    P("%s: a key_revocation NEM verifikal a root-horgonyra" % src)
                     continue
                 if rec.get("log_id") != eff_log:
-                    P("revocations[%d]: idegen loghoz tartozik (%s)" % (i + 1, rec.get("log_id")))
+                    P("%s: a key_revocation idegen loghoz tartozik (%s)" % (src, rec.get("log_id")))
                     continue
                 rev_pool.append(rec)
             if eff_log:
@@ -768,6 +814,26 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                 if not verify_consistency(m, n, ordered[i - 1]["root_hash"], ordered[i]["root_hash"], proof):
                     P("STH %s -> %s: consistency proof MEGBUKOTT" % (m, n))
 
+        # 16. (0.7) control-log commitment (tukor a JS verifier 16. ellenorzesehez)
+        if control_records is not None:
+            committed = [s for s in ordered if isinstance(s.get("control_root_hash"), str)]
+            top = ordered[-1]
+            if committed and not isinstance(top.get("control_root_hash"), str):
+                P("CONTROL_DOWNGRADE: a legnagyobb STH (tree_size=%s) nem commitol control-keszletet, de egy kisebb igen"
+                  % top.get("tree_size"))
+            prev_c = None
+            for s in committed:
+                _, ok_c, withheld = check_sth_commitment(s, control_records)
+                if withheld:
+                    P("CONTROL_WITHHELD: STH (tree_size=%s): a publikalt control log rovidebb a commitolt control_size-nal"
+                      % s.get("tree_size"))
+                elif not ok_c:
+                    P("CONTROL_ROOT_MISMATCH: STH (tree_size=%s): a commitment nem egyezik a control loggal"
+                      % s.get("tree_size"))
+                if prev_c is not None and check_control_consistency(prev_c, s, control_records) != 0:
+                    P("CONTROL_NON_APPEND_ONLY: STH %s -> %s" % (prev_c.get("tree_size"), s.get("tree_size")))
+                prev_c = s
+
     # 10. inclusion proof minden horgonyzott receiptre
     anchored = 0
     for r in leaf_receipts:
@@ -798,11 +864,13 @@ def main(argv):
     trust_root_path = None
     successions_path = None
     revocations_path = None
+    control_path = None
     log_id = None
     args = []
     i = 1
     while i < len(argv):
-        if argv[i] in ("--sth-key", "--trust-root", "--successions", "--revocations", "--log-id"):
+        if argv[i] in ("--sth-key", "--trust-root", "--successions", "--revocations",
+                       "--control", "--log-id"):
             if i + 1 >= len(argv):
                 sys.stderr.write("HIBA: %s utan hianyzik az ertek\n" % argv[i])
                 return 2
@@ -814,6 +882,8 @@ def main(argv):
                 successions_path = argv[i + 1]
             elif argv[i] == "--revocations":
                 revocations_path = argv[i + 1]
+            elif argv[i] == "--control":
+                control_path = argv[i + 1]
             else:
                 log_id = argv[i + 1]
             i += 2
@@ -842,10 +912,11 @@ def main(argv):
             trust_root = parse_trust_root_input(f.read())
     successions = read_jsonl(successions_path) if successions_path else None
     revocations = read_jsonl(revocations_path) if revocations_path else None
+    control_records = read_jsonl(control_path) if control_path else None
 
     problems, stats = verify(receipts, sths, anchors, pub_raw, sth_pub_raw,
                              trust_root=trust_root, successions=successions, log_id=log_id,
-                             revocations=revocations)
+                             revocations=revocations, control_records=control_records)
     print("-" * 72)
     print("Python verifier (cross-impl mag)")
     print("Receiptek: %d  (%d workflow, %d lepes)  |  %d STH, %d horgonyzott"
