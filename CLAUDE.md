@@ -200,6 +200,17 @@ fagyott JS SDK (1.2/1.3), partial control-disclosure (1.5), frissített 1.x
 kompat-policy (a JS SDK-felület 1.2 óta fagyott). A 1.0-spec forward-pointert kap.
 README + package.json files. 41 suite változatlanul zöld. Release: v1.5.1.
 
+## 1.5.2 — KÉSZ (2026-06-13): böngészős verifier
+
+Additív artefaktum (nincs build/függőség/CI-érintés). `axr-verifier.html` —
+önálló, zero-dep, hálózat nélküli oldal, ami a logot teljesen kliensoldalon
+verifikálja WebCrypto-val (Ed25519 + lánc + STH-aláírás/lánc), plain-language
+PASS/FAIL + run/step drill-down. A canonicalize/signablePart/chainHash 1:1 port
+az axr-core.js-ből (azonos volatilis-mező stripping; dob undefined/NaN/bigint/
+non-plain esetén). Az anchor (OTS) és a witness-függetlenség a CLI scope-ja
+marad. package.json files + README szakasz + Files-sor. Release: v1.5.2.
+(Ellenőrizve commit előtt: WebCrypto-guard + nulla hálózati hívás + core-port hu.)
+
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 
 Scope: AXR-0.8-SCOPE.md (Meridian+NEXUS review). Megelőző equivocation-védelem:

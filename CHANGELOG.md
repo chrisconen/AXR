@@ -5,6 +5,24 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.5.2] - 2026-06-13
+
+Browser verifier — additive artifact, no build, no dependency, no CI change.
+
+### Added
+
+- **`axr-verifier.html`** — a single self-contained page (zero dependencies, no
+  network calls) that verifies a log entirely client-side with WebCrypto: drop
+  in `receipts.jsonl` + the public key (optionally `sth.jsonl`) and it recomputes
+  every Ed25519 signature and chain hash in the browser, then shows a
+  plain-language PASS/FAIL verdict and a per-run/per-step drill-down. It checks
+  signatures, chain integrity, and STH signatures/links; the external anchor
+  (OTS/Bitcoin) and witness independence remain the CLI's scope. The
+  `canonicalize` / `signablePart` / `chainHash` logic is ported 1:1 from
+  `axr-core.js` (same volatile-field stripping; throws on
+  undefined/NaN/bigint/non-plain). Added to the npm `files` list. README gains a
+  "Browser verifier — the non-technical view" section + a Files-table row.
+
 ## [1.5.1] - 2026-06-13
 
 Documentation consolidation (no code change). Adds **`AXR-SPEC-1.x.md`**, a

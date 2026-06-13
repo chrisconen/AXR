@@ -358,6 +358,17 @@ node axr-report.js receipts.jsonl pub.pem sth.jsonl anchors.jsonl \
 
 Honest framing, per the project's doctrine: the report is a **view over the verifier's verdict**, not a replacement for it. The PASS/FAIL banner is the exit code of `axr-verify.js` run with the same flags, faithfully reported; the report asserts nothing it did not check, restates the N1/N2/N4 limits, and is reproducible (same inputs → same report). A test cross-checks that the report's verdict matches the verifier on both a valid and a tampered log.
 
+### Browser verifier — the non-technical view
+
+`axr-verifier.html` is a single self-contained page (zero dependencies, no
+network calls) that verifies a log entirely client-side using WebCrypto.
+Drop in a `receipts.jsonl` and the public key (optionally `sth.jsonl`) and it
+recomputes every Ed25519 signature and chain hash in the browser, then shows a
+plain-language PASS/FAIL verdict and a per-run, per-step breakdown of what the
+agent did. It checks signatures, chain integrity, and STH signatures/links; the
+external anchor (OTS/Bitcoin) and witness independence remain the CLI's scope.
+The verification logic is ported 1:1 from `axr-core.js`.
+
 ### Determinism and adversarial testing
 
 The "anyone can verify, in any language" claim rests on **byte-identical canonicalization**. `core.canonicalize` follows RFC 8785 (JCS) key ordering (UTF-16 code units) and ECMAScript number formatting, and **throws** on `NaN`/`Infinity`/`undefined`/`bigint`/non-plain objects rather than silently corrupting them (which `JSON.stringify` would). Cross-implementation byte vectors are pinned in `axr-canonical-test.js`.
@@ -559,6 +570,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-workflow-lint.js` | **0.2.1:** CI gate against logic drift — fingerprints every attested node's code (SHA-256) in the exported workflow JSON and fails on mismatch with the generator's `logic_version`/`logic_hash` constants (`--manifest` emits fresh fingerprints) |
 | `axr-verify.js` | Standalone verifier (checks 1–15): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]`; **0.4 flags:** `--strict`, `--sth-key`, `--trust-root`, `--online`; **0.5 flags:** `--successions`, `--log-id` (rotation-spanning verification) |
 | `axr_verify.py` | **Independent** zero-dependency Python verifier (own canonicalizer, pure-Python Ed25519, RFC 6962 Merkle) — cross-implementation proof |
+| `axr-verifier.html` | Zero-dependency browser verifier — client-side WebCrypto signature + chain verification with a plain-language verdict and run/step drill-down |
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back; **0.4:** `upgrade` subcommand (OTS calendar confirmation) |
 | `axr-trust-root.js` | **0.4:** trust-root builder/verifier CLI — root-signed provider key allowlist (`build`, `verify`) |
 | `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`); **0.5:** timeline-based key verification (`--trust-root`, `--successions`), `KEY_ROTATED_AUTHORIZED`/`KEY_CHANGED_UNAUTHORIZED`, OCSF export (`--ocsf-out`), webhook (`--webhook`); **0.7:** control-log consumption (`--control`), `CONTROL_WITHHELD`/`DOWNGRADE`/`NON_APPEND_ONLY`; **0.8:** witness gating (`--require-witnesses`), `WITNESS_COSIGNATURE_INVALID`/`UNDER_WITNESSED` |
