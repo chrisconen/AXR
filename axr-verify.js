@@ -75,7 +75,8 @@ const control = require('./axr-control');
 function parseArgs(argv) {
   const positional = [];
   const flags = { strict: false, online: false, sthKey: null, trustRoot: null,
-                  successions: null, revocations: null, control: null, logId: null };
+                  successions: null, revocations: null, control: null, logId: null,
+                  requireWitnesses: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--strict') flags.strict = true;
@@ -85,6 +86,7 @@ function parseArgs(argv) {
     else if (a === '--successions') flags.successions = argv[++i];
     else if (a === '--revocations') flags.revocations = argv[++i];
     else if (a === '--control') flags.control = argv[++i];
+    else if (a === '--require-witnesses') flags.requireWitnesses = true;
     else if (a === '--log-id') flags.logId = argv[++i];
     else if (a.startsWith('--')) { console.error('ismeretlen kapcsolo: ' + a); process.exit(2); }
     else positional.push(a);
@@ -96,7 +98,7 @@ const [logPath, keyPath, sthPath, anchorPath] = _pos;
 if (!logPath || !keyPath) {
   console.error('Hasznalat: node axr-verify.js <receipts.jsonl> <public-key.pem> [sth.jsonl] [anchors.jsonl]\n' +
     '            [--strict] [--sth-key <pem>] [--trust-root <json>] [--online]\n' +
-    '            [--successions <jsonl>] [--revocations <jsonl>] [--control <jsonl>] [--log-id <id>]');
+    '            [--successions <jsonl>] [--revocations <jsonl>] [--control <jsonl>] [--require-witnesses] [--log-id <id>]');
   process.exit(2);
 }
 
@@ -644,6 +646,36 @@ if (sths.length) {
         for (const p of cc.problems) problem(`CONTROL_NON_APPEND_ONLY: STH ${prevC.tree_size} -> ${sth.tree_size}: ${p}`);
       }
       prevC = sth;
+    }
+  }
+
+  // ── 17. (0.8) Witness-cosignature ellenorzes ─────────────────────────────────
+  // A control logbeli witness_set rekordokbol witness-idovonal; minden STH-nal a
+  // tree_size-nal aktiv keszlet ellen. Az anomalia (manipulalt/nem-deklaralt
+  // cosignature) MINDIG hiba; a threshold-alattisag UNDER_WITNESSED - csak
+  // --require-witnesses mellett hiba (kulonben megjegyzes az osszegzesben).
+  if (trustRoot && controlRecords.length) {
+    const wsets = [];
+    controlRecords.forEach((rec, i) => {
+      if (!rec || rec.record_type !== 'witness_set') return;
+      const v = succ.verifyWitnessSet(rec, trustRoot);
+      if (!v.ok) { problem(`control witness_set[${i + 1}]: NEM verifikal: ${v.problems.join('; ')}`); return; }
+      wsets.push(rec);
+    });
+    if (wsets.length) {
+      const wtl = succ.buildWitnessTimeline(wsets, trustRoot);
+      for (const p of wtl.problems) notice(`witness-idovonal: ${p}`);
+      for (const sth of sorted) {
+        const we = succ.witnessAt(wtl.timeline, sth.tree_size);
+        if (!we) continue;
+        const wr = succ.verifyWitnessCosignatures(sth, we);
+        for (const a of wr.anomalies) problem(`WITNESS_COSIGNATURE_INVALID: STH (tree_size=${sth.tree_size}): ${a}`);
+        if (wr.validCount < wr.threshold) {
+          const m = `STH (tree_size=${sth.tree_size}): ${wr.validCount}/${wr.threshold} witness-cosignature`;
+          if (ARGS.requireWitnesses) problem(`UNDER_WITNESSED: ${m} - a kuszob alatt (--require-witnesses)`);
+          else soft(`UNDER_WITNESSED: ${m} - a kuszob alatt (--require-witnesses mellett hiba)`);
+        }
+      }
     }
   }
 }

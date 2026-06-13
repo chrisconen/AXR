@@ -579,6 +579,113 @@ def verify_key_revocation(r, root_anchor):
                           canonicalize(body).encode("utf-8"), raw)
 
 
+# ── 0.8: witness-kor (STH cosignature-ok) - tukor a JS axr-succession-hoz ──────
+def verify_witness_set(rec, root_anchor):
+    if not isinstance(rec, dict) or rec.get("record_type") != "witness_set":
+        return False
+    if not rec.get("log_id"):
+        return False
+    ws = rec.get("witnesses")
+    if not isinstance(ws, list) or not ws:
+        return False
+    n = len(ws)
+    m = rec.get("witness_threshold")
+    if not isinstance(m, int) or isinstance(m, bool) or m < 1 or m > n:
+        return False
+    ef = rec.get("effective_from_tree_size")
+    if not isinstance(ef, int) or isinstance(ef, bool) or ef < 1:
+        return False
+    if isinstance(root_anchor, dict):
+        mode = trust_root_mode(root_anchor)
+        if mode is None:
+            return False
+        if mode[0] == "quorum":
+            return verify_quorum_signed(rec, mode[1], mode[2])
+        raw = pubkey_from_pem(mode[1][0])
+    else:
+        raw = root_anchor
+    if not rec.get("signature"):
+        return False
+    body = {k: v for k, v in rec.items() if k != "signature"}
+    return ed25519_verify(base64.b64decode(rec["signature"]),
+                          canonicalize(body).encode("utf-8"), raw)
+
+
+def build_witness_timeline(witness_sets, root_anchor, problems):
+    valid = []
+    seen = set()
+    for w in (witness_sets or []):
+        if not isinstance(w, dict) or w.get("record_type") != "witness_set":
+            continue
+        h = sha256_str(w)
+        if h in seen:
+            continue
+        seen.add(h)
+        if not verify_witness_set(w, root_anchor):
+            problems.append("elvetett witness_set (effective_from=%s)" % w.get("effective_from_tree_size"))
+            continue
+        valid.append(w)
+    valid.sort(key=lambda w: w.get("effective_from_tree_size", 0))
+    timeline = []
+    i = 0
+    while i < len(valid):
+        w = valid[i]
+        ef = w["effective_from_tree_size"]
+        nxt = valid[i + 1] if i + 1 < len(valid) else None
+        if nxt and nxt["effective_from_tree_size"] == ef:
+            problems.append("witness_set utkozes effective_from=%s - ambiguous, kihagyva" % ef)
+            while i + 1 < len(valid) and valid[i + 1]["effective_from_tree_size"] == ef:
+                i += 1
+            i += 1
+            continue
+        timeline.append({"from": ef, "threshold": w["witness_threshold"],
+                         "witnesses": [{"fp": key_fingerprint(x["public_key"]),
+                                        "raw": pubkey_from_pem(x["public_key"])} for x in w["witnesses"]]})
+        i += 1
+    return timeline
+
+
+def witness_at(timeline, tree_size):
+    chosen = None
+    for e in timeline:
+        if e["from"] <= tree_size:
+            chosen = e
+        else:
+            break
+    return chosen
+
+
+def verify_witness_cosignatures(sth, entry):
+    # -> (valid_count, threshold, anomalies). Tukor a JS verifyWitnessCosignatures.
+    anomalies = []
+    if not entry:
+        return (0, 0, anomalies)
+    by_fp = {w["fp"]: w["raw"] for w in entry["witnesses"]}
+    body = {k: v for k, v in sth.items() if k != "witness_cosignatures"}
+    msg = canonicalize(body).encode("utf-8")
+    cosigs = sth.get("witness_cosignatures")
+    cosigs = cosigs if isinstance(cosigs, list) else []
+    valid = 0
+    prev = None
+    for part in cosigs:
+        if not isinstance(part, dict) or not part.get("witness_fingerprint") or not part.get("signature"):
+            anomalies.append("hianyos cosignature")
+            continue
+        fp = part["witness_fingerprint"]
+        if prev is not None and not (fp > prev):
+            anomalies.append("nem-determinisztikus cosignature-sorrend")
+        prev = fp
+        raw = by_fp.get(fp)
+        if raw is None:
+            anomalies.append("nem-deklaralt witness")
+            continue
+        if ed25519_verify(base64.b64decode(part["signature"]), msg, raw):
+            valid += 1
+        else:
+            anomalies.append("ERVENYTELEN cosignature")
+    return (valid, entry["threshold"], anomalies)
+
+
 def build_key_timeline(genesis_pem, successions, role, root_pub_raw, problems, revocations=None):
     # -> idovonal: [{from, raw (nyers pubkey), fingerprint, authorized}]
     if not genesis_pem:
@@ -652,7 +759,7 @@ def read_jsonl(path):
 
 def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
            trust_root=None, successions=None, log_id=None, revocations=None,
-           control_records=None):
+           control_records=None, require_witnesses=False):
     # sth_pub_raw: ha adott, az STH-alairasokat KIZAROLAG ezzel ellenorizzuk
     sth_key = sth_pub_raw if sth_pub_raw is not None else pub_raw
     problems = []
@@ -851,6 +958,29 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                     P("CONTROL_NON_APPEND_ONLY: STH %s -> %s" % (prev_c.get("tree_size"), s.get("tree_size")))
                 prev_c = s
 
+        # 17. (0.8) witness-cosignature ellenorzes (tukor a JS verifier 17-hez)
+        if trust_root is not None and control_records:
+            wsets = []
+            for i, rec in enumerate(control_records):
+                if not isinstance(rec, dict) or rec.get("record_type") != "witness_set":
+                    continue
+                if not verify_witness_set(rec, trust_root):
+                    P("control witness_set[%d]: NEM verifikal" % (i + 1))
+                    continue
+                wsets.append(rec)
+            if wsets:
+                wtl = build_witness_timeline(wsets, trust_root, problems)
+                for s in ordered:
+                    we = witness_at(wtl, s.get("tree_size", 0))
+                    if not we:
+                        continue
+                    vc, thr, anomalies = verify_witness_cosignatures(s, we)
+                    for a in anomalies:
+                        P("WITNESS_COSIGNATURE_INVALID: STH (tree_size=%s): %s" % (s.get("tree_size"), a))
+                    if vc < thr and require_witnesses:
+                        P("UNDER_WITNESSED: STH (tree_size=%s): %d/%d witness-cosignature (--require-witnesses)"
+                          % (s.get("tree_size"), vc, thr))
+
     # 10. inclusion proof minden horgonyzott receiptre
     anchored = 0
     for r in leaf_receipts:
@@ -883,9 +1013,14 @@ def main(argv):
     revocations_path = None
     control_path = None
     log_id = None
+    require_witnesses = False
     args = []
     i = 1
     while i < len(argv):
+        if argv[i] == "--require-witnesses":
+            require_witnesses = True
+            i += 1
+            continue
         if argv[i] in ("--sth-key", "--trust-root", "--successions", "--revocations",
                        "--control", "--log-id"):
             if i + 1 >= len(argv):
@@ -933,7 +1068,8 @@ def main(argv):
 
     problems, stats = verify(receipts, sths, anchors, pub_raw, sth_pub_raw,
                              trust_root=trust_root, successions=successions, log_id=log_id,
-                             revocations=revocations, control_records=control_records)
+                             revocations=revocations, control_records=control_records,
+                             require_witnesses=require_witnesses)
     print("-" * 72)
     print("Python verifier (cross-impl mag)")
     print("Receiptek: %d  (%d workflow, %d lepes)  |  %d STH, %d horgonyzott"

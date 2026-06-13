@@ -159,6 +159,7 @@ function pollMonitor(opts) {
   // az STH-alairast SOSEM ellenorizzuk olyan kulccsal, amit nem a root autorizalt.
   const currentMax = sths[sths.length - 1].tree_size;
   let timeline = null;
+  let witnessTimeline = null;  // 0.8: witness-idovonal a control logbeli witness_set-ekbol
   if (trustRootRecords) {
     // 0.6: lanc-feloldas - a fej onmagaban ervenyes genesis, minden utodot az
     // ELOD kvoruma autorizal; az effektiv root a lanc vege. Egyrekordos
@@ -235,12 +236,28 @@ function pollMonitor(opts) {
     // (ervenytelen rekord = ugyanaz a kod, mint kulso forrasnal). A commitment-
     // es withholding-ellenorzes lentebb, az STH-k feldolgozasakor.
     const controlRecords = opts.control || [];
+    const witnessSets = [];
     controlRecords.forEach((rec, i) => {
       if (!rec || typeof rec !== 'object') { V('CONTROL_ROOT_MISMATCH', `control[${i}]: nem objektum`); return; }
       if (rec.record_type === 'key_succession') addSucc(rec, `control[${i}]`);
       else if (rec.record_type === 'key_revocation') addRev(rec, `control[${i}]`);
+      else if (rec.record_type === 'witness_set') {
+        // 0.8: a witness-keszletet root-verifikaljuk; az ervenyesek a witness-
+        // idovonalra kerulnek (a threshold-ellenorzes az STH-knal, lentebb).
+        const v = succ.verifyWitnessSet(rec, trustRoot);
+        if (!v.ok) V('CONTROL_ROOT_MISMATCH', `control[${i}] witness_set: NEM verifikal: ${v.problems.join('; ')}`);
+        else if (rec.log_id !== effLogId) V('CONTROL_ROOT_MISMATCH', `control[${i}] witness_set: idegen log_id (${rec.log_id})`);
+        else witnessSets.push(rec);
+      }
       else V('CONTROL_ROOT_MISMATCH', `control[${i}]: ismeretlen control record_type (${rec.record_type}) - fail-closed`);
     });
+    // 0.8: witness-idovonal (a threshold-ellenorzes az STH-knal). A pool mar
+    // root-verifikalt; az utkozeseket (azonos effective_from) a builder jelzi.
+    if (witnessSets.length) {
+      const wtl = succ.buildWitnessTimeline(witnessSets, trustRoot);
+      for (const p of wtl.problems) N('witness-idovonal: ' + p);
+      witnessTimeline = wtl.timeline;
+    }
 
     if (!genesisPem) {
       // degradalt mod: nincs root-horgonyzott genesis ehhez a loghoz -> a regi
@@ -366,6 +383,24 @@ function pollMonitor(opts) {
     } else if (!axr.verifyReceipt(sth, opts.publicKeyPem))
       V('BAD_SIGNATURE', `STH (tree_size=${sth.tree_size}): ERVENYTELEN ALAIRAS`);
 
+    // 0.8: witness-check. Ha az adott tree_size-nal aktiv egy witness-keszlet,
+    // a cosignature-ok anomaliaja MINDIG sertes (manipulalt cosignature); a
+    // threshold-alattisag UNDER_WITNESSED - default notice, --require-witnesses
+    // (opts.requireWitnesses) mellett violation (szigoru transzparencia-mod).
+    if (witnessTimeline) {
+      const we = succ.witnessAt(witnessTimeline, sth.tree_size);
+      if (we) {
+        const wr = succ.verifyWitnessCosignatures(sth, we);
+        for (const a of wr.anomalies)
+          V('WITNESS_COSIGNATURE_INVALID', `STH (tree_size=${sth.tree_size}): ${a}`);
+        if (wr.validCount < wr.threshold) {
+          const msg = `STH (tree_size=${sth.tree_size}): ${wr.validCount}/${wr.threshold} witness-cosignature - a kuszob alatt`;
+          if (opts.requireWitnesses) V('UNDER_WITNESSED', msg + ' (--require-witnesses: violation)');
+          else N('UNDER_WITNESSED: ' + msg + ' (notice; --require-witnesses mellett violation)');
+        }
+      }
+    }
+
     if (haveLeaves && sth.tree_size <= leafHashes.length) {
       const recomputed = axr.merkleRootFromLeaves(leafHashes.slice(0, sth.tree_size));
       if (recomputed !== sth.root_hash)
@@ -477,8 +512,13 @@ if (require.main === module) {
   const positional = [];
   const flags = {};
   for (let i = 0; i < rest.length; i++) {
-    if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
-    else positional.push(rest[i]);
+    if (rest[i].startsWith('--')) {
+      // boolean flag, ha nincs ertek vagy a kovetkezo token is flag (pl.
+      // --require-witnesses) - kulonben ertekes flag, ami fogyasztja a kovetkezot
+      const next = rest[i + 1];
+      if (next === undefined || next.startsWith('--')) { flags[rest[i].slice(2)] = true; }
+      else { flags[rest[i].slice(2)] = next; i++; }
+    } else positional.push(rest[i]);
   }
 
   function printResult(label, res) {
@@ -496,7 +536,7 @@ if (require.main === module) {
   if (cmd === 'poll') {
     const [sthPath, keyPath] = positional;
     if (!sthPath || !keyPath) {
-      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl] [--revocations revocations.jsonl] [--control control.jsonl] [--ocsf-out <fajl|->] [--webhook <url>] [--webhook-token <token> | --webhook-token-file <fajl> | AXR_WEBHOOK_TOKEN env]');
+      console.error('Hasznalat: node axr-monitor.js poll <sth.jsonl> <public-key.pem> [--state monitor-state.json] [--receipts receipts.jsonl] [--anchors anchors.jsonl] [--log-id ...] [--trust-root trust-root.json] [--successions successions.jsonl] [--revocations revocations.jsonl] [--control control.jsonl] [--require-witnesses] [--ocsf-out <fajl|->] [--webhook <url>] [--webhook-token <token> | --webhook-token-file <fajl> | AXR_WEBHOOK_TOKEN env]');
       process.exit(2);
     }
     const publicKeyPem = fs.readFileSync(keyPath, 'utf8');
@@ -506,7 +546,8 @@ if (require.main === module) {
       trustRootPath: flags['trust-root'],
       successions: flags.successions ? readJsonl(flags.successions) : undefined,
       revocations: flags.revocations ? readJsonl(flags.revocations) : undefined,
-      control: flags.control ? readJsonl(flags.control) : undefined
+      control: flags.control ? readJsonl(flags.control) : undefined,
+      requireWitnesses: 'require-witnesses' in flags
     });
     printResult('Monitor poll', res);
 
