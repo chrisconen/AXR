@@ -335,14 +335,19 @@ def signable_part(receipt):
     # verifikalnak. (Tukor-fix a JS core.signablePart valtozasahoz.)
     clone.pop("anchor_ref", None)
     clone.pop("redactable", None)
+    # 0.8: a witness_cosignatures az alairas UTAN tapad az STH-ra (volatilis,
+    # mint az anchor_ref) - jelenlet-alapon vagjuk le (tukor a JS core-hoz).
+    clone.pop("witness_cosignatures", None)
     return clone
 
 
 def chain_hash(receipt):
-    if isinstance(receipt, dict) and ("anchor_ref" in receipt or "redactable" in receipt):
+    if isinstance(receipt, dict) and ("anchor_ref" in receipt or "redactable" in receipt
+                                      or "witness_cosignatures" in receipt):
         clone = dict(receipt)
         clone.pop("anchor_ref", None)
         clone.pop("redactable", None)
+        clone.pop("witness_cosignatures", None)
         return sha256_str(clone)
     return sha256_str(receipt)
 

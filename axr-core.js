@@ -111,6 +111,11 @@ function versionAtLeast(v, min) {
 function _stripVolatile(clone) {
   delete clone.anchor_ref;
   delete clone.redactable;
+  // 0.8: a witness_cosignatures az operator-alairas UTAN, aszinkron kerul az
+  // STH-ra (a witnessek kesobb cosignolnak) - ezert volatilis, mint az
+  // anchor_ref: sem az operator-alairas, sem a lanc-hash nem fedheti, kulonben
+  // a cosignature-ok hozzaadasa torne a mar kiadott STH-t es a lancot.
+  delete clone.witness_cosignatures;
   return clone;
 }
 
@@ -129,6 +134,10 @@ function signablePart(receipt) {
   // 0.1/0.2-es (legacy) receiptek alairasa is helyesen verifikal.
   if ('anchor_ref' in clone) delete clone.anchor_ref;
   if ('redactable' in clone) delete clone.redactable;
+  // 0.8: a witness-cosignatureok az alairas UTAN tapadnak az STH-ra (lasd
+  // _stripVolatile) - jelenlet-alapon vagjuk le, hogy a regi receiptek
+  // alairasa valtozatlan maradjon (a mezo hianyaban no-op).
+  if ('witness_cosignatures' in clone) delete clone.witness_cosignatures;
   return clone;
 }
 
@@ -137,7 +146,8 @@ function signablePart(receipt) {
 // a horgonyzas illetve a kesobbi redakcio ne torje el a lancot. Egy helyen el,
 // hogy a generator es a verifier garantaltan ugyanazt szamolja.
 function chainHash(receipt) {
-  if (receipt && typeof receipt === 'object' && ('anchor_ref' in receipt || 'redactable' in receipt)) {
+  if (receipt && typeof receipt === 'object' &&
+      ('anchor_ref' in receipt || 'redactable' in receipt || 'witness_cosignatures' in receipt)) {
     return sha256(_stripVolatile({ ...receipt }));
   }
   return sha256(receipt);

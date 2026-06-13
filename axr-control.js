@@ -32,7 +32,13 @@ const core = require('./axr-core');
 const succ = require('./axr-succession');
 
 const CONTROL_VERSION = '0.7';
-const CONTROL_RECORD_TYPES = ['key_succession', 'key_revocation'];
+// A control log altal hordozott governance-rekord tipusok. Forward-kompat /
+// version-gate elv (0.8): a control log trust-kritikus csatorna, ezert az
+// ISMERETLEN record_type FAIL-CLOSED (verifyControlLog elveti). Uj tipus
+// felvetele itt tortenik, a fogyasztoi verifikaciojaval egyutt - igy egy regi
+// fogyasztó sosem fogad el vakon olyan governance-rekordot, amit nem ert.
+// 0.8: witness_set (a witness-kor + threshold deklaracioja, root/kvorum-alairt).
+const CONTROL_RECORD_TYPES = ['key_succession', 'key_revocation', 'witness_set'];
 
 // A control-fa Merkle-gyokere egy control-rekord tomb felett (RFC 6962, a
 // receipt-fevel azonos gepezet). Ures tomb -> az ures fa gyokere.
@@ -55,8 +61,8 @@ function verifyControlRecord(rec, rootAnchor, expectedLogId) {
     problems.push('idegen log_id (' + rec.log_id + ' != ' + expectedLogId + ')');
   const anchor = resolveAnchor(rootAnchor);
   if (anchor == null) return { ok: false, problems: problems.concat(['ervenytelen/feloldhatatlan root-horgony']) };
-  const v = rec.record_type === 'key_revocation'
-    ? succ.verifyKeyRevocation(rec, anchor)
+  const v = rec.record_type === 'key_revocation' ? succ.verifyKeyRevocation(rec, anchor)
+    : rec.record_type === 'witness_set' ? succ.verifyWitnessSet(rec, anchor)
     : succ.verifyKeySuccession(rec, anchor);
   if (!v.ok) problems.push.apply(problems, v.problems);
   return { ok: problems.length === 0, problems };

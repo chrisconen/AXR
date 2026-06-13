@@ -467,6 +467,188 @@ function verifyKeyRevocation(rev, rootAnchor) {
   return { ok: problems.length === 0, problems };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.8 - Witness-kor (STH cosignature-ok, megelozo equivocation-vedelem)
+// ═══════════════════════════════════════════════════════════════════════════════
+// A 0.3 Monitor IDOBEN/NEZETEK KOZOTT fogja az equivocationt (utolagos). A 0.8
+// MEGELOZOVE teszi az ELFOGADASI kapunal: egy STH-t a fogyaszto addig nem fogad
+// el teljes bizalommal, amig threshold-nyi FUGGETLEN witness alá nem irta.
+//
+// Ez csak akkor preventiv, ha a witness STATEFUL (Meridian-invarians): egy
+// witness csak append-only folytatast cosignol az altala utoljara latott
+// STH-hoz - igy egy operator nem tud threshold-nyi cosignature-t szerezni egy
+// split-view agra. Az append-only ellenorzes a WITNESS oldalan tortenik (lasd
+// axr-witness CLI); a protokoll a cosignature FORMATUMAT es a fogyasztoi
+// threshold-ellenorzest rogziti.
+//
+// A witness-kor a CONTROL LOGBAN el (root/kvorum-alairt witness_set rekord),
+// NEM a trust-rootban - operativ eletciklus, ujrahasznalja a 0.7 csatornat.
+
+const WITNESS_VERSION = '0.8';
+
+function buildWitnessSetBody(opts, now) {
+  if (!opts.log_id) throw new Error('witness_set: log_id kotelezo');
+  const witnesses = (opts.witnesses || []).map(w =>
+    (typeof w === 'string') ? { name: keyFingerprint(w).slice(7, 19), public_key: w }
+                            : { name: w.name || keyFingerprint(w.public_key).slice(7, 19), public_key: w.public_key });
+  if (!witnesses.length) throw new Error('witness_set: legalabb egy witness kell');
+  for (const w of witnesses) if (!w.public_key) throw new Error('witness_set: hianyzo witness public_key');
+  if (!Number.isInteger(opts.witness_threshold) || opts.witness_threshold < 1 || opts.witness_threshold > witnesses.length)
+    throw new Error('witness_set: witness_threshold 1..' + witnesses.length + ' kell legyen');
+  if (!Number.isInteger(opts.effective_from_tree_size) || opts.effective_from_tree_size < 1)
+    throw new Error('witness_set: effective_from_tree_size pozitiv egesz kell legyen');
+  return {
+    axr_version: WITNESS_VERSION,
+    record_type: 'witness_set',
+    log_id: opts.log_id,
+    witnesses,
+    witness_threshold: opts.witness_threshold,
+    effective_from_tree_size: opts.effective_from_tree_size,
+    reason: opts.reason || 'unspecified',
+    issued_at: (now || (() => new Date().toISOString()))()
+  };
+}
+function buildWitnessSet(opts, rootPrivPem, now) {
+  const body = buildWitnessSetBody(opts, now);
+  const sig = crypto.sign(null, Buffer.from(core.canonicalize(body), 'utf8'),
+    crypto.createPrivateKey(rootPrivPem)).toString('base64');
+  return { ...body, signature: sig };
+}
+function buildQuorumWitnessSet(opts, signerPrivPems, now) {
+  const body = buildWitnessSetBody(opts, now);
+  return assembleQuorum(body, (signerPrivPems || []).map(p => signQuorumPart(body, p)));
+}
+
+// witness_set ellenorzese a root-horgonnyal (PEM | trust-root | lanc). -> {ok,problems}
+function verifyWitnessSet(rec, rootAnchor) {
+  const problems = [];
+  if (!rec || typeof rec !== 'object') return { ok: false, problems: ['nem objektum'] };
+  if (rec.record_type !== 'witness_set') problems.push('record_type != witness_set');
+  if (!rec.log_id) problems.push('hianyzo log_id');
+  if (!Array.isArray(rec.witnesses) || !rec.witnesses.length) problems.push('ures/hianyzo witnesses');
+  const n = Array.isArray(rec.witnesses) ? rec.witnesses.length : 0;
+  if (!Number.isInteger(rec.witness_threshold) || rec.witness_threshold < 1 || rec.witness_threshold > n)
+    problems.push('ervenytelen witness_threshold');
+  if (!Number.isInteger(rec.effective_from_tree_size) || rec.effective_from_tree_size < 1)
+    problems.push('ervenytelen effective_from_tree_size');
+  if (problems.length) return { ok: false, problems };
+
+  let mode = null;
+  if (typeof rootAnchor === 'string') mode = { mode: 'single', keys: [rootAnchor], threshold: 1 };
+  else if (rootAnchor && rootAnchor.record_type === 'trust_root') {
+    mode = trustRootMode(rootAnchor);
+    if (mode.mode === 'invalid') return { ok: false, problems: mode.problems };
+  } else return { ok: false, problems: ['ervenytelen root-horgony'] };
+
+  if (mode.mode === 'quorum') {
+    const q = verifyQuorumSigned(rec, mode.keys, mode.threshold);
+    return { ok: q.ok, problems: q.problems };
+  }
+  if (!rec.signature) return { ok: false, problems: ['hianyzo signature'] };
+  const body = { ...rec }; delete body.signature;
+  try {
+    const ok = crypto.verify(null, Buffer.from(core.canonicalize(body), 'utf8'),
+      crypto.createPublicKey(mode.keys[0]), Buffer.from(rec.signature, 'base64'));
+    if (!ok) problems.push('a witness_set alairasa ERVENYTELEN a root-kulcsra');
+  } catch (e) { problems.push('witness_set alairas-ellenorzes hiba: ' + e.message); }
+  return { ok: problems.length === 0, problems };
+}
+
+// Witness-idovonal a (root-verifikalt) witness_set rekordokbol. A witness_set
+// rekordok ABSZOLUT policy-deklaraciok (nincs predecessor-lancolas, mint a
+// successionnel): minden root-autorizalt. Az adott tree_size-nal a legkesobbi
+// effective_from <= tree_size az aktiv. Azonos effective_from-ra ket eltero
+// keszlet = ambiguitas -> fail-closed (a hatar konfliktusos, nem valasztunk).
+//   -> { timeline: [{ from_tree_size, witnesses:[{name,fingerprint,pem}], threshold }], problems }
+function buildWitnessTimeline(witnessSets, rootAnchor) {
+  const problems = [];
+  const valid = [];
+  const seen = new Set();
+  for (const w of (witnessSets || [])) {
+    if (!w || w.record_type !== 'witness_set') continue;
+    const h = core.sha256(w); if (seen.has(h)) continue; seen.add(h);
+    const v = verifyWitnessSet(w, rootAnchor);
+    if (!v.ok) { problems.push('elvetett witness_set (effective_from=' + (w && w.effective_from_tree_size) + '): ' + v.problems.join('; ')); continue; }
+    valid.push(w);
+  }
+  valid.sort((a, b) => a.effective_from_tree_size - b.effective_from_tree_size);
+  const timeline = [];
+  for (let i = 0; i < valid.length; i++) {
+    const w = valid[i];
+    const next = valid[i + 1];
+    if (next && next.effective_from_tree_size === w.effective_from_tree_size) {
+      // ket eltero witness_set ugyanarra a hatarra (a dedup mar kiszurte az
+      // azonosakat) -> ambiguitas, fail-closed: egyiket sem vesszuk fel
+      problems.push('witness_set utkozes effective_from=' + w.effective_from_tree_size + ' - ambiguous policy, kihagyva');
+      // ugorjuk at az osszes azonos hatarut
+      let j = i;
+      while (valid[j + 1] && valid[j + 1].effective_from_tree_size === w.effective_from_tree_size) j++;
+      i = j;
+      continue;
+    }
+    timeline.push({
+      from_tree_size: w.effective_from_tree_size,
+      threshold: w.witness_threshold,
+      witnesses: w.witnesses.map(x => ({ name: x.name, pem: x.public_key, fingerprint: keyFingerprint(x.public_key) }))
+    });
+  }
+  return { timeline, problems };
+}
+
+function witnessAt(timeline, treeSize) {
+  let chosen = null;
+  for (const e of timeline) { if (e.from_tree_size <= treeSize) chosen = e; else break; }
+  return chosen;
+}
+
+// Egy witness cosignolasa egy STH felett. Az uzenet a kanonikus STH a
+// witness_cosignatures mezo NELKUL (de az operator-alairasaval EGYUTT - igy a
+// cosignature a konkret operator-alairt STH-hoz kotodik).
+function cosignWitness(sth, witnessPrivPem) {
+  const body = { ...sth }; delete body.witness_cosignatures;
+  const priv = crypto.createPrivateKey(witnessPrivPem);
+  const pubPem = crypto.createPublicKey(priv).export({ type: 'spki', format: 'pem' });
+  return {
+    witness_fingerprint: keyFingerprint(pubPem),
+    signature: crypto.sign(null, Buffer.from(core.canonicalize(body), 'utf8'), priv).toString('base64')
+  };
+}
+// Cosignature-ok hozzaadasa az STH-hoz (determinisztikus: fingerprint szerint).
+function assembleWitnessCosignatures(sth, parts) {
+  const sorted = (parts || []).slice().sort((a, b) =>
+    a.witness_fingerprint < b.witness_fingerprint ? -1 : a.witness_fingerprint > b.witness_fingerprint ? 1 : 0);
+  return { ...sth, witness_cosignatures: sorted };
+}
+
+// Egy STH witness-cosignature-einek ellenorzese az adott (aktiv) witness-keszlet
+// ellen. SZIGORU fail-closed az ANOMALIAKRA (nem-deklaralt/duplikalt/rendezetlen/
+// ervenytelen alairas); a threshold ALATTISAG NEM anomalia, hanem kulon jelzes
+// (UNDER_WITNESSED a fogyasztoknal). -> { validCount, threshold, anomalies: [] }
+function verifyWitnessCosignatures(sth, witnessEntry) {
+  const anomalies = [];
+  const threshold = witnessEntry ? witnessEntry.threshold : 0;
+  const cosigs = Array.isArray(sth.witness_cosignatures) ? sth.witness_cosignatures : [];
+  if (!witnessEntry) return { validCount: 0, threshold: 0, anomalies };
+  const byFp = new Map();
+  for (const w of witnessEntry.witnesses) byFp.set(w.fingerprint, w.pem);
+  const body = { ...sth }; delete body.witness_cosignatures;
+  const msg = Buffer.from(core.canonicalize(body), 'utf8');
+  let valid = 0, prevFp = null;
+  for (const part of cosigs) {
+    if (!part || !part.witness_fingerprint || !part.signature) { anomalies.push('hianyos cosignature-bejegyzes'); continue; }
+    if (prevFp !== null && !(part.witness_fingerprint > prevFp))
+      anomalies.push('nem-determinisztikus cosignature-sorrend: ' + part.witness_fingerprint.slice(0, 20) + '...');
+    prevFp = part.witness_fingerprint;
+    const pem = byFp.get(part.witness_fingerprint);
+    if (!pem) { anomalies.push('nem-deklaralt witness: ' + part.witness_fingerprint.slice(0, 20) + '...'); continue; }
+    try {
+      if (crypto.verify(null, msg, crypto.createPublicKey(pem), Buffer.from(part.signature, 'base64'))) valid++;
+      else anomalies.push('ERVENYTELEN cosignature: ' + part.witness_fingerprint.slice(0, 20) + '...');
+    } catch (e) { anomalies.push('cosignature-ellenorzes hiba: ' + e.message); }
+  }
+  return { validCount: valid, threshold, anomalies };
+}
+
 // ── Kulcs-idovonal epitese genesisbol + successionokbol ───────────────────────
 // A megadott role-ra epit egy idovonalat. Minden succession a root-kulccsal
 // verifikalt; a lanc a genesis fingerprintjebol indul es predecessor-linkelt.
@@ -609,5 +791,15 @@ module.exports = {
   buildQuorumKeyRevocation,
   verifyKeyRevocation,
   buildKeyTimeline,
-  keyAtTreeSize
+  keyAtTreeSize,
+  WITNESS_VERSION,
+  buildWitnessSet,
+  buildWitnessSetBody,
+  buildQuorumWitnessSet,
+  verifyWitnessSet,
+  buildWitnessTimeline,
+  witnessAt,
+  cosignWitness,
+  assembleWitnessCosignatures,
+  verifyWitnessCosignatures
 };
