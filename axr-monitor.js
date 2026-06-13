@@ -291,12 +291,19 @@ function pollMonitor(opts) {
       if (anyCommitment) {
         // DOWNGRADE: a journal mar latott commitmentet, vagy egy korabbi STH
         // commitolt, de a legnagyobb fa-meretu mar nem
-        const topSth = sortedByTree[sortedByTree.length - 1];
-        const topCommits = typeof topSth.control_root_hash === 'string';
-        // DOWNGRADE: a legnagyobb fa-meretu STH nem commitol, de volt commitment -
-        // akar egy korabbi STH-ban ebben a pollban, akar egy korabbi pollban
-        if (!topCommits && (state.control_committed || committedSths.length > 0))
-          V('CONTROL_DOWNGRADE', `a legnagyobb STH (tree_size=${topSth.tree_size}) NEM commitol control-keszletet, de korabban volt commitment - revokacio-rejtes kiserlet`);
+        // DOWNGRADE (Meridian-review): az invarians az, hogy az ELSO commitolo
+        // STH utan MINDEN nagyobb fa-meretu STH commitoljon. Nem eleg a legnagyobb
+        // STH-t nezni: egy commit -> no-control -> commit szekvencia kozteso,
+        // nem-commitolo STH-ja is revokacio-rejtes lenne. Ha korabbi poll mar
+        // latott commitmentet (state.control_committed), akkor MINDEN STH-nak
+        // commitolnia kell.
+        let firstCommitTree = state.control_committed ? -1 : null;
+        for (const sth of sortedByTree) {
+          const commits = typeof sth.control_root_hash === 'string';
+          if (commits) { if (firstCommitTree === null) firstCommitTree = sth.tree_size; }
+          else if (firstCommitTree !== null)
+            V('CONTROL_DOWNGRADE', `STH (tree_size=${sth.tree_size}) NEM commitol control-keszletet, de egy korabbi (tree_size>=${firstCommitTree < 0 ? 'elozo poll' : firstCommitTree}) igen - revokacio-rejtes kiserlet`);
+        }
         let prevCommitted = null;
         let withheldThisPoll = false;
         for (const sth of committedSths) {

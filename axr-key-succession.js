@@ -39,6 +39,11 @@
 // A verify mindharom horgonyt fogadja: nyers PEM, trust-root, trust-root LANC -
 // es key_succession ES key_revocation rekordot is ellenoriz.
 //
+// 0.7 - control log:
+//   node axr-key-succession.js control add <control.jsonl> <rekord.json> --trust-root <horgony> [--log-id id]
+//   node axr-key-succession.js control verify <control.jsonl> <horgony> [--log-id id]
+//   node axr-key-succession.js control status <control.jsonl> <trust-root> --log-id id [--at <tree_size>]
+//
 // Nulla kulso fuggoseg. Kilepesi kod: 0 ok, 1 ervenytelen, 2 rossz hasznalat.
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -50,6 +55,12 @@ function die(msg, code) { console.error(msg); process.exit(code == null ? 2 : co
 function readFileOrDie(p, label) {
   try { return fs.readFileSync(p, 'utf8'); }
   catch (e) { die('HIBA: a(z) ' + label + ' nem olvashato: ' + e.message); }
+}
+function readJsonlOrDie(p) {
+  const raw = readFileOrDie(p, 'JSONL fajl (' + p + ')').trim();
+  if (!raw) return [];
+  try { return raw.split('\n').filter(Boolean).map(JSON.parse); }
+  catch (e) { return die('HIBA: ervenytelen JSONL (' + p + '): ' + e.message); }
 }
 
 const [,, cmd, ...rest] = process.argv;
@@ -341,4 +352,97 @@ if (cmd === 'assemble') {
   process.exit(0);
 }
 
-die('Hasznalat: node axr-key-succession.js <build|verify|fingerprint|revoke|body|sign|assemble> ...');
+// ═══════════════════════════════════════════════════════════════════════════════
+// 0.7 - control log kezeles: add / verify / status
+// ═══════════════════════════════════════════════════════════════════════════════
+if (cmd === 'control') {
+  const sub = rest[0];
+  const control = require('./axr-control');
+
+  // control add <control.jsonl> <rekord.json> --trust-root <horgony> [--log-id id]
+  // Append ELOTT teljes verify (self-lockout vedelem: ervenytelen rekord nem
+  // kerul a logba, kulonben a sidecar/fogyasztok elbuknanak rajta).
+  if (sub === 'add') {
+    const positional = [];
+    const flags = {};
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+      else positional.push(rest[i]);
+    }
+    const [controlPath, recordPath] = positional;
+    if (!controlPath || !recordPath || !flags['trust-root'])
+      die('Hasznalat: node axr-key-succession.js control add <control.jsonl> <rekord.json> --trust-root <horgony> [--log-id id]');
+    let record;
+    try { record = JSON.parse(readFileOrDie(recordPath, 'rekord')); }
+    catch (e) { die('HIBA: a rekord ervenytelen JSON: ' + e.message); }
+    const anchor = loadAnchorOrDie(flags['trust-root']);
+    const chk = control.verifyControlRecord(record, anchor, flags['log-id']);
+    if (!chk.ok) die('HIBA: a rekord NEM verifikal - nem fuzheto a control loghoz: ' + chk.problems.join('; '), 1);
+    fs.appendFileSync(controlPath, JSON.stringify(record) + '\n');
+    console.error('control add: a(z) ' + record.record_type + ' rekord hozzafuzve (' + controlPath + ').');
+    process.exit(0);
+  }
+
+  // control verify <control.jsonl> <horgony> [--log-id id]  (offline lint)
+  if (sub === 'verify') {
+    const positional = [];
+    const flags = {};
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+      else positional.push(rest[i]);
+    }
+    const [controlPath, anchorPath] = positional;
+    if (!controlPath || !anchorPath)
+      die('Hasznalat: node axr-key-succession.js control verify <control.jsonl> <root-pub.pem|trust-root.json|lanc.jsonl> [--log-id id]');
+    const records = readJsonlOrDie(controlPath);
+    const anchor = loadAnchorOrDie(anchorPath);
+    const res = control.verifyControlLog(records, anchor, flags['log-id']);
+    if (res.ok) {
+      console.log('Control log ERVENYES: ' + records.length + ' rekord, mind root-autorizalt.');
+      console.log('  control_root_hash: ' + control.controlRoot(records));
+      process.exit(0);
+    }
+    console.log('Control log ERVENYTELEN:');
+    for (const p of res.problems) console.log('  ' + p);
+    process.exit(1);
+  }
+
+  // control status <control.jsonl> <horgony> --log-id id [--at <tree_size>]
+  // Az adott fa-meretnel ervenyes aktiv kulcsok role-onkent.
+  if (sub === 'status') {
+    const positional = [];
+    const flags = {};
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i].startsWith('--')) { flags[rest[i].slice(2)] = rest[i + 1]; i++; }
+      else positional.push(rest[i]);
+    }
+    const [controlPath, anchorPath] = positional;
+    if (!controlPath || !anchorPath || !flags['log-id'])
+      die('Hasznalat: node axr-key-succession.js control status <control.jsonl> <horgony> --log-id <id> [--at <tree_size>]');
+    const records = readJsonlOrDie(controlPath);
+    const anchor = loadAnchorOrDie(anchorPath);
+    // a loadAnchorOrDie lanc eseten mar az effektiv (egyetlen) trust-root
+    // objektumot adja; nyers PEM-bol nincs genesis -> status nem ertelmezheto
+    const trObj = (typeof anchor === 'string' || !anchor || anchor.record_type !== 'trust_root') ? null : anchor;
+    if (!trObj) die('HIBA: a control status kibovitett trust-root horgonyt igenyel (genesis-kulcsokkal), nem nyers PEM-et.');
+    const at = flags.at != null ? Number(flags.at) : Number.MAX_SAFE_INTEGER;
+    const res = control.verifyControlLog(records, anchor, flags['log-id']);
+    if (!res.ok) { console.log('FIGYELEM: a control log nem teljesen ervenyes - status a valid rekordokbol:'); for (const p of res.problems) console.log('  ' + p); }
+    console.log('Aktiv kulcsok @ tree_size=' + (flags.at != null ? at : 'max') + ' (log: ' + flags['log-id'] + '):');
+    for (const role of ['sth', 'receipt']) {
+      const genesisPem = succ.genesisKey(trObj, flags['log-id'], role);
+      if (!genesisPem) { console.log('  ' + role + ': (nincs genesis ehhez a role-hoz)'); continue; }
+      const tl = succ.buildKeyTimeline(genesisPem, res.valid, role, anchor,
+        res.valid.filter(r => r.record_type === 'key_revocation'));
+      const e = succ.keyAtTreeSize(tl.timeline, at);
+      const revoked = e && e.revoked_from != null && at >= e.revoked_from;
+      console.log('  ' + role + ': ' + (e ? e.fingerprint : '(nincs)') +
+        (e && !e.authorized ? ' [NEM AUTORIZALT]' : '') + (revoked ? ' [REVOKALT @' + e.revoked_from + ']' : ''));
+    }
+    process.exit(0);
+  }
+
+  die('Hasznalat: node axr-key-succession.js control <add|verify|status> ...');
+}
+
+die('Hasznalat: node axr-key-succession.js <build|verify|fingerprint|revoke|body|sign|assemble|control> ...');

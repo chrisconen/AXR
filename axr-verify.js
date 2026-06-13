@@ -616,11 +616,22 @@ if (sths.length) {
   // (a fajlok kezben vannak), igy a withheld AZONNAL fail-closed - nincs
   // lag-turelem (az a monitor poll-modelljee). DOWNGRADE: a legnagyobb fa-meretu
   // STH nem commitol, de egy kisebb igen.
-  if (ARGS.control) {
+  // A blokk akkor fut, ha --control adott VAGY barmely STH commitol. Utobbi a
+  // kulcs (NEXUS-review): ha az STH-k commitolnak, de a hivo nem adott
+  // control logot, az NEM csendben atlepheto - pont az a withholding, amit a
+  // commitment elkapni hivatott. Ilyenkor controlRecords ures -> CONTROL_WITHHELD.
+  if (ARGS.control || sorted.some(t => typeof t.control_root_hash === 'string')) {
     const committed = sorted.filter(t => typeof t.control_root_hash === 'string');
-    const top = sorted[sorted.length - 1];
-    if (committed.length && !(typeof top.control_root_hash === 'string'))
-      problem(`CONTROL_DOWNGRADE: a legnagyobb STH (tree_size=${top.tree_size}) nem commitol control-keszletet, de egy kisebb igen`);
+    // DOWNGRADE (Meridian-review): az elso commitolo STH utan MINDEN nagyobb
+    // fa-meretu STH commitoljon - nem eleg a legnagyobbat nezni (commit ->
+    // no-control -> commit kozteso STH-ja is revokacio-rejtes lenne)
+    let firstCommitTree = null;
+    for (const sth of sorted) {
+      const commits = typeof sth.control_root_hash === 'string';
+      if (commits) { if (firstCommitTree === null) firstCommitTree = sth.tree_size; }
+      else if (firstCommitTree !== null)
+        problem(`CONTROL_DOWNGRADE: STH (tree_size=${sth.tree_size}) nem commitol, de egy korabbi (tree_size>=${firstCommitTree}) igen`);
+    }
     let prevC = null;
     for (const sth of committed) {
       const chk = control.checkSthCommitment(sth, controlRecords);

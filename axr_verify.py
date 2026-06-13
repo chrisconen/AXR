@@ -814,23 +814,35 @@ def verify(receipts, sths, anchors, pub_raw, sth_pub_raw=None,
                 if not verify_consistency(m, n, ordered[i - 1]["root_hash"], ordered[i]["root_hash"], proof):
                     P("STH %s -> %s: consistency proof MEGBUKOTT" % (m, n))
 
-        # 16. (0.7) control-log commitment (tukor a JS verifier 16. ellenorzesehez)
-        if control_records is not None:
+        # 16. (0.7) control-log commitment (tukor a JS verifier 16. ellenorzesehez).
+        # Akkor is fut, ha barmely STH commitol, de nincs --control (NEXUS-review):
+        # az commitolt-de-control-nelkul eset CONTROL_WITHHELD, nem csendes atlepes.
+        any_committed = any(isinstance(s.get("control_root_hash"), str) for s in ordered)
+        if control_records is not None or any_committed:
+            ctl = control_records if control_records is not None else []
             committed = [s for s in ordered if isinstance(s.get("control_root_hash"), str)]
-            top = ordered[-1]
-            if committed and not isinstance(top.get("control_root_hash"), str):
-                P("CONTROL_DOWNGRADE: a legnagyobb STH (tree_size=%s) nem commitol control-keszletet, de egy kisebb igen"
-                  % top.get("tree_size"))
+            # DOWNGRADE (Meridian-review): az elso commitolo STH utan minden
+            # nagyobb fa-meretu STH commitoljon (commit -> no-control -> commit
+            # kozteso STH-ja is rejtes lenne)
+            first_commit = None
+            for s in ordered:
+                commits = isinstance(s.get("control_root_hash"), str)
+                if commits:
+                    if first_commit is None:
+                        first_commit = s.get("tree_size")
+                elif first_commit is not None:
+                    P("CONTROL_DOWNGRADE: STH (tree_size=%s) nem commitol, de egy korabbi (tree_size>=%s) igen"
+                      % (s.get("tree_size"), first_commit))
             prev_c = None
             for s in committed:
-                _, ok_c, withheld = check_sth_commitment(s, control_records)
+                _, ok_c, withheld = check_sth_commitment(s, ctl)
                 if withheld:
                     P("CONTROL_WITHHELD: STH (tree_size=%s): a publikalt control log rovidebb a commitolt control_size-nal"
                       % s.get("tree_size"))
                 elif not ok_c:
                     P("CONTROL_ROOT_MISMATCH: STH (tree_size=%s): a commitment nem egyezik a control loggal"
                       % s.get("tree_size"))
-                if prev_c is not None and check_control_consistency(prev_c, s, control_records) != 0:
+                if prev_c is not None and check_control_consistency(prev_c, s, ctl) != 0:
                     P("CONTROL_NON_APPEND_ONLY: STH %s -> %s" % (prev_c.get("tree_size"), s.get("tree_size")))
                 prev_c = s
 

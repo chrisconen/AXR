@@ -3,7 +3,47 @@
 All notable changes to AXR are documented here. The project follows the
 spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring,
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
-root-lifecycle hardening + SIEM export).
+root-lifecycle hardening + SIEM export, 0.7 control log).
+
+## [0.7.0] - 2026-06-13
+
+Governance-distribution layer: the control log closes the withholding and
+revocation-absorption gaps left by 0.6's out-of-band distribution. Spec:
+`AXR-SPEC-0.7.md`; scope decision trail: `AXR-0.7-SCOPE.md` (Meridian/NEXUS
+review). The 0.2 wire format is untouched — the control log is a separate
+sidecar file, the commitment two additive STH fields. Every feature is
+opt-in; without a control log the tooling behaves bit-for-bit as 0.6.
+
+### Added
+
+- **Control log core** (`axr-control.js`). `controlRoot` (RFC 6962 over
+  governance records, reusing the receipt-tree machinery — the empty log has
+  a real root), `verifyControlRecord`/`verifyControlLog` (full root/quorum
+  crypto verification + log_id guard + record-type allowlist),
+  `checkSthCommitment` (control_root_hash + control_size against the actual
+  log, withheld detection), `checkControlConsistency` (append-only over the
+  control tree). Anchors are PEM, trust root or chain.
+- **Sidecar commitment** (`axr-anchor --control --control-trust-root`). The
+  STH signed body commits `control_root_hash` + `control_size`; per the
+  Meridian condition the sidecar fully verifies every control record before
+  committing and throws on any invalid record (no DoS/self-lockout surface).
+  Empty log commits `control_size=0`. Without `--control` the STH is unchanged.
+- **Monitor consumption** (`--control`). Governance records feed the same
+  verified, deduplicated pools; STH commitments are checked against the log.
+  New codes: `CONTROL_ROOT_MISMATCH`, `CONTROL_NON_APPEND_ONLY`,
+  `CONTROL_DOWNGRADE`, and withholding via the decided escalation —
+  `CONTROL_LAG` notice (one poll cycle of replication tolerance) then
+  `CONTROL_WITHHELD` violation; the journal pins max control_size + root.
+- **Verifier consumption** (`--control`, JS + Python). Check 16: every
+  committing STH validated against the control log; offline so withholding is
+  immediately fail-closed. The Python verifier mirrors `control_root`,
+  `check_sth_commitment` and `check_control_consistency`.
+- **Control CLI** (`axr-key-succession control add|verify|status`). `add`
+  appends only after full verification; `verify` is an offline lint; `status`
+  resolves the active key per role at a tree size.
+- OCSF mapping extended with the four control codes. 55 new assertions across
+  five suites (control core, sidecar, monitor, cross-impl verifier, CLI), with
+  JS↔Python agreement on accept AND reject.
 
 ## [0.6.0] - 2026-06-12
 

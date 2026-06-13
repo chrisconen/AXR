@@ -161,7 +161,44 @@ ok(run(['verify', succByNewPath, chainPath]).code === 0,
   'verify lanc-horgonnyal: az UJ kvorum rekordja az effektiv root ellen ervenyes');
 
 // ───────────────────────────────────────────────────────────────────────────
-section('8. End-to-end: a CLI-vel epitett rekordot a sidecar beagyazza');
+section('8. (0.7) control add / verify / status');
+const ctlPath = W('control.jsonl', '');
+const recSuccRec = JSON.parse(run(['build', rootPrivPath, '--log-id', LOG, '--role', 'receipt',
+  '--predecessor', aPubPath, '--successor', bPubPath, '--effective-from', '4']).out);
+const recSuccPath = W('rec-succ.json', JSON.stringify(recSuccRec) + '\n');
+// add: ervenyes rekord hozzafuzodik
+ok(run(['control', 'add', ctlPath, recSuccPath, '--trust-root', rootPubPath, '--log-id', LOG]).code === 0,
+  'control add: ervenyes rekord hozzafuzve');
+ok(fs.readFileSync(ctlPath, 'utf8').trim().split('\n').length === 1, 'a control log 1 rekordot tartalmaz');
+// add: hamis rekord elutasitva (nem fuzodik a loghoz)
+const forgedRec2 = s.buildKeySuccession({ log_id: LOG, role: 'receipt',
+  predecessor_fingerprint: s.keyFingerprint(A.publicKey), successor_public_key: B.publicKey,
+  effective_from_tree_size: 4 }, fakeRoot.privateKey, T0);
+const forgedRecPath = W('forged-rec.json', JSON.stringify(forgedRec2) + '\n');
+ok(run(['control', 'add', ctlPath, forgedRecPath, '--trust-root', rootPubPath, '--log-id', LOG]).code === 1,
+  'control add: hamis root-tal alairt rekord -> exit 1 (self-lockout vedelem)');
+ok(fs.readFileSync(ctlPath, 'utf8').trim().split('\n').length === 1, 'a hamis rekord NEM fuzodott a loghoz');
+// verify: az ervenyes log atmegy
+ok(run(['control', 'verify', ctlPath, rootPubPath, '--log-id', LOG]).code === 0, 'control verify: ervenyes log -> exit 0');
+// verify: hamis rekordot tartalmazo log bukik
+const badCtlPath = W('bad-control.jsonl', JSON.stringify(forgedRec2) + '\n');
+ok(run(['control', 'verify', badCtlPath, rootPubPath, '--log-id', LOG]).code === 1, 'control verify: hamis rekord -> exit 1');
+// status: a receipt-role aktiv kulcs a hatar elott A, utana B
+const trStatusPath = W('tr-status.json', JSON.stringify(tr) + '\n'); // 1. szekciobeli single-root, A genesis sth
+// epitsunk dedikalt trust-rootot genesis receipt=A-val a status-hoz
+const statusTr = s.buildTrustRoot({ providers: [],
+  logs: [{ log_id: LOG, genesis: { sth: A.publicKey, receipt: A.publicKey } }] }, root.privateKey, root.publicKey, T0);
+const statusTrPath = W('status-tr.json', JSON.stringify(statusTr) + '\n');
+const statusCtl = W('status-control.jsonl', JSON.stringify(s.buildKeySuccession({ log_id: LOG, role: 'receipt',
+  predecessor_fingerprint: s.keyFingerprint(A.publicKey), successor_public_key: B.publicKey,
+  effective_from_tree_size: 4 }, root.privateKey, T0)) + '\n');
+const st3 = run(['control', 'status', statusCtl, statusTrPath, '--log-id', LOG, '--at', '3']);
+const st5 = run(['control', 'status', statusCtl, statusTrPath, '--log-id', LOG, '--at', '5']);
+ok(st3.code === 0 && st3.out.includes(s.keyFingerprint(A.publicKey)), 'status @3: a receipt-kulcs meg A');
+ok(st5.code === 0 && st5.out.includes(s.keyFingerprint(B.publicKey)), 'status @5: a receipt-kulcs mar B');
+
+// ───────────────────────────────────────────────────────────────────────────
+section('9. End-to-end: a CLI-vel epitett rekordot a sidecar beagyazza');
 (async () => {
   const logDir = path.join(dir, 'log'); fs.mkdirSync(logDir);
   const receiptsPath = path.join(logDir, 'receipts.jsonl');

@@ -98,9 +98,21 @@ keresztreview-val. Release: v0.6.0. Eredeti terv (referenciának):
 5. Spec: AXR-SPEC-0.6.md kvórum-policy threat-model szekcióval, 2-of-3
    ajánlással (nem kényszer).
 
-Halasztva 0.7-re: P4 control-log irány (receipt-succession terjesztés az STH
-body-jában commitolt manifesttel), Compliance Report Generator, 0.5 rollout
-tooling (a P1 után indulhat párhuzamosan), wall-clock ablakok (elvetve).
+## 0.7 control log — KÉSZ (2026-06-13)
+
+Scope: AXR-0.7-SCOPE.md (Meridian+NEXUS review). A governance-rekordok
+(receipt-role succession, revokáció) in-log, anchorolt terjesztése:
+control.jsonl + STH-commitment (control_root_hash + control_size), a wire
+format érintése nélkül. Szállítva: axr-control.js core, sidecar
+--control/--control-trust-root (commit előtti teljes kripto-verify),
+monitor --control (CONTROL_LAG→WITHHELD eszkaláció, DOWNGRADE, journal-pin),
+JS+Python verifier check 16, CLI control add/verify/status, AXR-SPEC-0.7.md.
+Release: v0.7.0.
+
+Halasztva 0.8+-ra: részleges control-disclosure (inclusion proof a
+control-fán), több control-namespace, verzió-kapu új control-rekordtípushoz,
+embedded_succession kivezetése. Külön sáv (nem protokoll): Compliance Report
+Generator, 0.5+ production rollout tooling. Elvetve: wall-clock ablakok.
 
 ## Sorvégek — figyelem
 

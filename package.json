@@ -1,6 +1,6 @@
 {
   "name": "axr",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Agent Execution Receipt - tamper-evident, cryptographically signed execution records for automated workflows and AI agents.",
   "license": "MIT",
   "author": "Conen Digital",
@@ -40,6 +40,7 @@
     "axr-trust-root.js",
     "axr-succession.js",
     "axr-key-succession.js",
+    "axr-control.js",
     "axr-ocsf.js",
     "axr-webhook.js",
     "axr_verify.py",
@@ -48,6 +49,7 @@
     "AXR-SPEC-0.4.md",
     "AXR-SPEC-0.5.md",
     "AXR-SPEC-0.6.md",
+    "AXR-SPEC-0.7.md",
     "COMPLIANCE.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
