@@ -5,6 +5,19 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [1.5.3] - 2026-06-13
+
+### Fixed
+
+- **`axr-verifier.html`: distinguish unsupported-browser from invalid-key.** The
+  WebCrypto Ed25519 support check now *probes* by importing the embedded
+  known-good sample key (real algorithm support, not merely `crypto.subtle.verify`
+  existence). A browser without Ed25519 gets the "use a recent browser" message;
+  a browser that supports it but is handed a bad key file gets the key-specific
+  message. Previously a has-`subtle`-but-no-Ed25519 browser could fall through to
+  the key-error path. Viewer-only; not part of the frozen wire format or SDK
+  surface.
+
 ## [1.5.2] - 2026-06-13
 
 Browser verifier — additive artifact, no build, no dependency, no CI change.

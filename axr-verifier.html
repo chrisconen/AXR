@@ -272,6 +272,11 @@ function pemToDer(pem){
   for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i); return u.buffer;
 }
 async function importPub(pem){return crypto.subtle.importKey('spki',pemToDer(pem),{name:'Ed25519'},false,['verify']);}
+async function ed25519Available(){
+  if(!(crypto && crypto.subtle && crypto.subtle.verify)) return false;
+  try{ await importPub(SAMPLE.pubkey); return true; }   // probe with the embedded known-good key
+  catch(e){ return false; }
+}
 function b64ToBytes(b64){const bin=atob(b64);const u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u;}
 async function verifySig(rec,key){
   if(!rec.signature) return false;
@@ -320,10 +325,13 @@ async function handleFiles(fileList){
 /* ------- verification orchestration ------- */
 async function run(){
   showErr('');
+  if(!await ed25519Available()){
+    showErr('This browser can\u2019t run Ed25519 verification yet. Use a recent Chrome/Edge (137+), Firefox (129+) or Safari (17+).');
+    return;
+  }
   let key;
   try{ key=await importPub(state.pubkey); }
-  catch(e){ showErr('That public key could not be read as an Ed25519 key.'); return; }
-  if(!('subtle' in crypto)||!crypto.subtle.verify){ showErr('This browser cannot run the verification. Try a recent Chrome, Edge, Firefox or Safari.'); return; }
+  catch(e){ showErr('That .pem could not be read as an Ed25519 public key \u2014 check you loaded the right key file.'); return; }
 
   const receipts=state.receipts;
   const problems=[], notices=[];

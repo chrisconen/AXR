@@ -211,6 +211,15 @@ non-plain esetén). Az anchor (OTS) és a witness-függetlenség a CLI scope-ja
 marad. package.json files + README szakasz + Files-sor. Release: v1.5.2.
 (Ellenőrizve commit előtt: WebCrypto-guard + nulla hálózati hívás + core-port hu.)
 
+## 1.5.3 — KÉSZ (2026-06-13): viewer böngésző-detekció fix
+
+`axr-verifier.html` viselkedés-fix (nem-normatív; a viewer nem része a fagyott
+wire-formátumnak/SDK-felületnek). Az Ed25519-támogatás-ellenőrzés most a beágyazott
+ismert-jó SAMPLE.pubkey-vel PROBÁL importKey-t (valódi algoritmus-támogatás, nem
+csak a subtle.verify léte) → tisztán szétválik a "nincs Ed25519 → böngésző-üzenet"
+és a "van, de rossz a kulcsfájl → kulcs-üzenet". Ellenőrizve: a probe-kulcs valós
+ed25519 SPKI, a SAMPLE érintetlen (nincs regresszió). Release: v1.5.3.
+
 ## 0.8 witness cosigning — KÉSZ (2026-06-13)
 
 Scope: AXR-0.8-SCOPE.md (Meridian+NEXUS review). Megelőző equivocation-védelem:
