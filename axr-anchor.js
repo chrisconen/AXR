@@ -258,6 +258,12 @@ async function runAnchor(opts) {
     const already = sths.some(t => t.embedded_succession &&
       t.embedded_succession.successor_fingerprint === sc.successor_fingerprint);
     if (!already) embedSuccession = sc;
+    // 0.8 DEPRECATION: a control log (0.7) az elsodleges governance-csatorna.
+    // Az embedded_succession atmeneti; ha a hivo control logot is hasznal,
+    // jelezzuk, hogy a successiont inkabb a control logba tegye. Eltavolitasi
+    // horizont: 1.0 (lasd AXR-SPEC-0.8 par. P3).
+    if (embedSuccession && opts.controlPath)
+      console.error('FIGYELEM (deprecated): az embedded_succession atmeneti - control log mellett a key_succession-t a control logba (witness_set/key_succession csatorna) erdemes tenni. Eltavolitas: 1.0.');
   }
 
   // 1/c. Control-log commitment (0.7): ha a hivo atad egy controlPath-t, az STH

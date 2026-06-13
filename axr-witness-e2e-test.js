@@ -155,6 +155,22 @@ function runVerify(cmd, L, extra) {
   ok(runVerify('node', Lbad) === 1, 'JS verifier (--require-witnesses NELKUL is): exit 1');
   if (PYTHON) ok(runVerify(PYTHON, Lbad) === 1, 'Python verifier: exit 1 (cross-impl)');
 
+  // ─────────────────────────────────────────────────────────────────────────
+  section('4. WITNESS_SET_AMBIGUOUS (ket utkozo witness_set azonos effective_from-ra)');
+  // Meridian-review: az ambiguous policy fail-closed, NEM csendes kihagyas
+  // (kulonben ki lehetne kapcsolni a witness-kaput). A control logba ket eltero
+  // witness_set kerul ugyanarra a hatarra.
+  const Lamb = await buildLog(mkdir('amb'), [W1.privateKey, W2.privateKey]);
+  const ws2 = s.buildWitnessSet({ log_id: LOG, witness_threshold: 1, effective_from_tree_size: 1,
+    witnesses: [{ name: 'other', public_key: Wx.publicKey }] }, root.privateKey, T0);
+  fs.appendFileSync(Lamb.controlPath, JSON.stringify(ws2) + '\n');
+  const resAmb = pollMonitor({ sthPath: Lamb.sthPath, publicKeyPem: op.publicKey, statePath: path.join(tmp, 'mon4.json'),
+    receiptsPath: Lamb.receiptsPath, trustRoot: [trustRoot], control: Lamb.control(), now: T0 });
+  ok(!resAmb.ok && codes(resAmb).includes('WITNESS_SET_AMBIGUOUS'),
+    'monitor: ket utkozo witness_set -> WITNESS_SET_AMBIGUOUS sertes (default modban is, fail-closed)');
+  ok(runVerify('node', Lamb) === 1, 'JS verifier: ambiguous witness_set -> exit 1 (--require-witnesses nelkul is)');
+  if (PYTHON) ok(runVerify(PYTHON, Lamb) === 1, 'Python verifier: ambiguous -> exit 1 (cross-impl, fail-closed)');
+
   console.log(`\nOsszesen: ${pass} ok, ${fail} hiba` + (PYTHON ? '' : ' (Python esetek kihagyva)'));
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error('VARATLAN HIBA:', e); process.exit(1); });

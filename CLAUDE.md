@@ -98,6 +98,22 @@ keresztreview-val. Release: v0.6.0. Eredeti terv (referenciának):
 5. Spec: AXR-SPEC-0.6.md kvórum-policy threat-model szekcióval, 2-of-3
    ajánlással (nem kényszer).
 
+## 0.8 witness cosigning — KÉSZ (2026-06-13)
+
+Scope: AXR-0.8-SCOPE.md (Meridian+NEXUS review). Megelőző equivocation-védelem:
+stateful witnessek cosignolják az STH-t; egy STH addig nem teljes-bizalmú, amíg
+threshold-nyi független witness alá nem írta. A witness_set a control logban
+(nem trust-root). Szállítva: witness primitívek (axr-succession), core volatilis
+witness_cosignatures mező, axr-witness CLI (stateful sign), monitor + JS/Python
+verifier check 17 (UNDER_WITNESSED notice/strict, WITNESS_COSIGNATURE_INVALID +
+WITNESS_SET_AMBIGUOUS mindig violation), embedded_succession deprecation,
+AXR-SPEC-0.8.md. Release: v0.8.0. Meridian-review két találata javítva: ambiguous
+witness_set fail-closed minden fogyasztóban; witness-state-integritás + Python
+verdikt-only specben kimondva.
+
+Halasztva 0.9/1.0-ra: emergency witness-revokáció; embedded_succession
+eltávolítása (1.0). Korábbról: részleges control-disclosure, több namespace.
+
 ## 0.7 control log — KÉSZ (2026-06-13)
 
 Scope: AXR-0.7-SCOPE.md (Meridian+NEXUS review). A governance-rekordok

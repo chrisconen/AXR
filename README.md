@@ -6,7 +6,7 @@
 
 A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
 
-**Current version:** 0.7.1 (package) — the production pilot writes the frozen **0.2.1 wire format** with hourly anchoring
+**Current version:** 0.8.0 (package) — the production pilot writes the frozen **0.2.1 wire format** with hourly anchoring
 **Status:** Pilot running on one live workflow with **hourly Merkle anchoring and STH key separation in production** since June 2026. Four pre-existing production bugs discovered and fixed because the receipts made them visible — plus two bugs AXR found in itself before they could reach the live log (see below).
 
 ### Maturity by layer
@@ -22,6 +22,7 @@ AXR ships as one repository spanning several maturity levels. Read a feature's l
 | SIEM export: OCSF Detection Finding mapping + generic webhook | 0.6 | **New** — OCSF-shaped output (not formally certified), best-effort delivery by design |
 | Root-lifecycle hardening: quorum root (M-of-N), root rotation/recovery, revocation, ceremony CLI | 0.6 | **New** — tested incl. cross-impl parity; quorum policy is part of the threat model (see spec §2.3) |
 | Control log: in-log, anchored distribution of governance records (STH commitment, withholding/downgrade detection) | 0.7 | **New** — tested incl. cross-impl parity; closes the out-of-band withholding/absorption gap without touching the wire format |
+| Witness cosigning: preventive equivocation defence (stateful witnesses gate STH acceptance) | 0.8 | **New** — tested incl. cross-impl parity; an STH is not fully trusted without a threshold of independent witness cosignatures |
 
 The 0.2 wire format is frozen: 0.1/0.2/0.3 logs verify byte-for-byte under the current verifier. New work is additive. Released versions are intended to be cut as git tags (`v0.2.x` … `v0.5.x`); the `main` branch is the integration line. Run `npm test` (or see CI) for the full cross-implementation suite.
 
@@ -264,6 +265,22 @@ node axr-rollout.js preflight receipts.jsonl sth.jsonl anchors.jsonl \
 
 The governing risk is **self-lockout** — a genesis key that does not match the actual signer makes every consumer reject the log. Preflight's `GENESIS_SIGNS` / `GENESIS_MISMATCH` finding catches exactly that, alongside an invalid trust root, a committing STH with no control log shipped, and warnings for local-only anchoring, no independent monitor, or a degenerate quorum. It also embeds the authoritative `axr-verify.js` verdict. Full migration order and the trap table are in `ROLLOUT.md`.
 
+### Witness cosigning (0.8) — preventive equivocation defence
+
+The 0.3 Monitor detects a split view *after the fact*. 0.8 makes the defence **preventive at the acceptance gate**: an STH is not fully trusted until a threshold of independent **witnesses** have cosigned it (the transparency-log pattern — CT 2.0, Sigsum). The witness circle is a root/quorum-signed `witness_set` record in the control log (operational lifecycle, not the trust root).
+
+This only works because the witness is **stateful**: `axr-witness sign` refuses to cosign a non-append-only STH (smaller `tree_size` = truncation; same size, different root = equivocation), so an operator cannot collect a threshold of cosignatures on a divergent branch.
+
+```bash
+# a witness cosigns a published STH (stateful: refuses equivocation/truncation)
+node axr-witness.js sign sth.jsonl witness-priv.pem --state witness-state.json
+# consumers gate on the threshold; strict transparency is opt-in
+node axr-verify.js receipts.jsonl pub.pem sth.jsonl anchors.jsonl \
+  --trust-root trust-root.json --control control.jsonl --require-witnesses
+```
+
+`WITNESS_COSIGNATURE_INVALID` (undeclared/invalid cosignature) and `WITNESS_SET_AMBIGUOUS` (conflicting policy) are always violations; `UNDER_WITNESSED` (below threshold) is a notice by default, a violation under `--require-witnesses` — so a live witness-less pilot is not broken on upgrade. Spec: `AXR-SPEC-0.8.md`. 42 assertions with Python cross-impl agreement. (Trust boundary: the witness's state store must be durable and non-rollbackable — see spec §5.)
+
 ### Compliance Report Generator — the auditor's view
 
 An auditor does not read JSONL and Merkle trees at the command line. `axr-report.js` turns a log into a self-contained, human-auditable **HTML** (or JSON) report: log overview, signature & anchoring integrity, the **key-governance timeline** (genesis → successions → revocations, the active key per role, authorized/revoked flags), the control-log commitment summary, privacy/side-effect counts, and an **EU AI Act Art.12 / GDPR control mapping** (drawn from COMPLIANCE.md, with the honest caveats).
@@ -476,10 +493,11 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr_verify.py` | **Independent** zero-dependency Python verifier (own canonicalizer, pure-Python Ed25519, RFC 6962 Merkle) — cross-implementation proof |
 | `axr-anchor.js` | **0.3:** anchoring sidecar — Merkle batching, Signed Tree Heads, backend submission (local / OpenTimestamps), `anchor_ref` write-back; **0.4:** `upgrade` subcommand (OTS calendar confirmation) |
 | `axr-trust-root.js` | **0.4:** trust-root builder/verifier CLI — root-signed provider key allowlist (`build`, `verify`) |
-| `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`); **0.5:** timeline-based key verification (`--trust-root`, `--successions`), `KEY_ROTATED_AUTHORIZED`/`KEY_CHANGED_UNAUTHORIZED`, OCSF export (`--ocsf-out`), webhook (`--webhook`); **0.7:** control-log consumption (`--control`), `CONTROL_WITHHELD`/`DOWNGRADE`/`NON_APPEND_ONLY` |
+| `axr-monitor.js` | **0.3:** independent monitor — retained STH journal, equivocation/truncation/rewrite detection (`poll`, `compare`); **0.5:** timeline-based key verification (`--trust-root`, `--successions`), `KEY_ROTATED_AUTHORIZED`/`KEY_CHANGED_UNAUTHORIZED`, OCSF export (`--ocsf-out`), webhook (`--webhook`); **0.7:** control-log consumption (`--control`), `CONTROL_WITHHELD`/`DOWNGRADE`/`NON_APPEND_ONLY`; **0.8:** witness gating (`--require-witnesses`), `WITNESS_COSIGNATURE_INVALID`/`UNDER_WITNESSED` |
 | `axr-succession.js` | **0.5:** key-succession module — genesis-bearing trust root, root-signed succession records, predecessor-linked key timeline (transitive authorization, fail-closed forks), `keyAtTreeSize`; **0.6:** quorum primitives (`signQuorumPart`/`assembleQuorum`/`verifyQuorumSigned`), trust-root chains (`buildTrustRootSuccessor`/`verifyTrustRootChain`), revocation (`key_revocation`, `revoked_from`) |
 | `axr-key-succession.js` | **0.5:** succession CLI — `build`, `verify`, `fingerprint`; **0.6:** ceremony (`body`/`sign`/`assemble --verify`), `revoke`, chain-capable anchors |
 | `axr-control.js` | **0.7:** control-log module — `controlRoot` (RFC 6962 over governance records), `verifyControlLog`, `checkSthCommitment`, `checkControlConsistency` (append-only over the control tree) |
+| `axr-witness.js` | **0.8:** witness CLI — stateful `sign` (refuses non-append-only STHs) + `verify`; the witness primitives (`buildWitnessSet`, `buildWitnessTimeline`, `cosignWitness`, `verifyWitnessCosignatures`) live in `axr-succession.js` |
 | `axr-report.js` | **Compliance Report Generator** — human-auditable HTML/JSON report from a log: integrity, key-governance timeline, anchoring, EU AI Act Art.12 / GDPR control mapping; the PASS/FAIL banner is the verifier's verdict (a view, not a replacement) |
 | `axr-rollout.js` | **Production rollout tooling** — `bootstrap` (trust root from the keys already in use) + `preflight` (GO/NO-GO readiness that catches self-lockout before going live); runbook in `ROLLOUT.md` |
 | `axr-ocsf.js` | **0.5:** OCSF 1.1.0 Detection Finding mapping for monitor events — deterministic finding uids, fail-closed severity for unknown violation codes |
@@ -513,6 +531,9 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `axr-anchor-control-test.js` | **0.7:** sidecar commitment — backward compat, empty log, incremental, forged-record/missing-trust-root both throw |
 | `axr-monitor-control-test.js` | **0.7:** monitor — `CONTROL_LAG`→`CONTROL_WITHHELD` escalation, `ROOT_MISMATCH`, `NON_APPEND_ONLY`, `DOWNGRADE` |
 | `axr-verify-control-test.js` | **0.7:** cross-impl verifier control checks — JS and Python agree on accept AND reject |
+| `axr-witness-test.js` | **0.8:** witness core — witness_set build/verify, timeline (ambiguous fail-closed), cosignature volatility, fail-closed cosignature anomalies |
+| `axr-witness-cli-test.js` | **0.8:** witness CLI — stateful sign (truncation/equivocation refusal, idempotent, extension), verify (threshold / under-witnessed / anomaly) |
+| `axr-witness-e2e-test.js` | **0.8:** cross-impl end-to-end — threshold met, UNDER_WITNESSED (notice/strict), WITNESS_COSIGNATURE_INVALID, WITNESS_SET_AMBIGUOUS; JS and Python agree |
 | `axr-report-test.js` | **CRG:** model fields, governance timeline, HTML/JSON render, and the report verdict cross-checked against `axr-verify.js` on valid and tampered logs |
 | `run-tests.js` | Unified test runner (`npm test`) — runs every suite, aggregates exit code for CI |
 | `package.json` | Package metadata, `npm test` wiring, zero runtime dependencies |
@@ -525,6 +546,7 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 | `AXR-SPEC-0.5.md` | 0.5 specification (key succession: records, one-clock boundary rule, timeline semantics, embedded succession, monitor codes, verifier check 15) |
 | `AXR-SPEC-0.6.md` | 0.6 specification (quorum root + policy threat model, root rotation/recovery chain, revocation three-tier semantics, ceremony CLI) |
 | `AXR-SPEC-0.7.md` | 0.7 specification (control log: STH commitment, append-only governance distribution, withholding/downgrade semantics, identity/epoch) |
+| `AXR-SPEC-0.8.md` | 0.8 specification (witness cosigning: stateful witnesses, witness_set in the control log, cosignature coverage, UNDER_WITNESSED/ambiguous semantics) |
 | `SECURITY.md` | Responsible-disclosure policy and supported versions |
 | `CONTRIBUTING.md` | Contribution guide (zero-dep, frozen wire format, tests-first) |
 | `CODE_OF_CONDUCT.md` | Contributor Covenant 2.1 |

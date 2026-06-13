@@ -664,7 +664,8 @@ if (sths.length) {
     });
     if (wsets.length) {
       const wtl = succ.buildWitnessTimeline(wsets, trustRoot);
-      for (const p of wtl.problems) notice(`witness-idovonal: ${p}`);
+      // ambiguous witness-policy fail-closed (Meridian-review), nem csendes kihagyas
+      for (const p of wtl.problems) problem(`WITNESS_SET_AMBIGUOUS: ${p}`);
       for (const sth of sorted) {
         const we = succ.witnessAt(wtl.timeline, sth.tree_size);
         if (!we) continue;

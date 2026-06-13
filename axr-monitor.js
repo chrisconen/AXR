@@ -255,7 +255,10 @@ function pollMonitor(opts) {
     // root-verifikalt; az utkozeseket (azonos effective_from) a builder jelzi.
     if (witnessSets.length) {
       const wtl = succ.buildWitnessTimeline(witnessSets, trustRoot);
-      for (const p of wtl.problems) N('witness-idovonal: ' + p);
+      // Ambiguous policy (azonos effective_from ket eltero keszlettel) FAIL-CLOSED
+      // (Meridian-review): nem csendes kihagyas, kulonben ket utkozo witness_set-tel
+      // ki lehetne kapcsolni a witness-kaput az adott tartomanyra.
+      for (const p of wtl.problems) V('WITNESS_SET_AMBIGUOUS', 'witness-idovonal: ' + p);
       witnessTimeline = wtl.timeline;
     }
 

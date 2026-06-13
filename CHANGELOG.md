@@ -5,6 +5,49 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [0.8.0] - 2026-06-13
+
+Preventive-equivocation layer: STH witness cosignatures make equivocation
+defence preventive at the acceptance gate, not just detect-after-the-fact.
+Spec: `AXR-SPEC-0.8.md`; scope decision trail: `AXR-0.8-SCOPE.md`
+(Meridian/NEXUS review). The 0.2 wire format is untouched — `witness_cosignatures`
+is a volatile post-signature STH field (stripped like `anchor_ref`). Opt-in;
+without a `witness_set` the tooling behaves bit-for-bit as 0.7.
+
+### Added
+
+- **Witness cosigning core** (`axr-succession.js`). `witness_set` (root/quorum-
+  signed, declares the witness circle + threshold + `effective_from_tree_size`,
+  carried in the control log — operational lifecycle, not the trust root);
+  `buildWitnessTimeline`/`witnessAt` (absolute root-authorized policy records;
+  same `effective_from` = ambiguous, fail-closed); `cosignWitness`/
+  `assembleWitnessCosignatures` (deterministic fingerprint order);
+  `verifyWitnessCosignatures` (strict fail-closed on undeclared/duplicate/
+  unordered/invalid; under-threshold is a separate count, not an anomaly).
+- **Volatile `witness_cosignatures`** (core + Python): stripped from
+  `signablePart` and `chainHash` present-based, so witnesses cosign after the
+  operator signs without breaking the operator signature or the STH chain.
+  `witness_set` added to the control-log record-type allowlist (forward-compat
+  version gate; unknown type stays fail-closed).
+- **`axr-witness` CLI** (in `bin`). Stateful `sign` — refuses a non-append-only
+  STH (TRUNCATION on smaller tree_size, EQUIVOCATION on same size + different
+  root, idempotent on identical, extension on larger): the invariant that makes
+  witnessing preventive rather than a blind notary. Plus `verify` and a
+  normative submission pattern in the spec.
+- **Consumer gating** (monitor + both verifiers, check 17). Every STH is gated
+  against the active witness set: `WITNESS_COSIGNATURE_INVALID` (always a
+  violation), `UNDER_WITNESSED` (notice by default, violation under
+  `--require-witnesses` — strict transparency is opt-in so a live witness-less
+  pilot is not broken). OCSF mapping extended.
+- 42 new assertions across three suites (witness core, CLI, end-to-end) with
+  Python cross-impl agreement on accept AND reject.
+
+### Deprecated
+
+- `embedded_succession` (0.5) where a control log is present — the control log
+  is the primary governance channel; the sidecar emits a deprecation notice,
+  removal slated for 1.0.
+
 ## [0.7.1] - 2026-06-13
 
 Tooling release on top of 0.7 — two operator-facing tools, **no protocol or
