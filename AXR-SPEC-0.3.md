@@ -8,7 +8,7 @@ anchoring and generative layers are specified here and implemented against a
 reference test vector set; production rollout of the anchoring layer is staged
 (see §13).
 **Date:** 2026-06-06
-**Authors:** Chris Conen (Conen Digital), Claude (CTO, CENTAUR)
+**Author:** Chris Conen (Conen Digital)
 
 ---
 
@@ -1261,8 +1261,8 @@ maps onto such a standard rather than competing with it.
 
 ---
 
-*The protocol, the generator, and the verifier were designed and built
-collaboratively under the CENTAUR model. AXR 0.3 deliberately reuses the
+*The protocol, the generator, and the verifier were designed and built with AI
+assistance. AXR 0.3 deliberately reuses the
 cryptographic primitives of Certificate Transparency and Sigstore rather than
 inventing new ones; its contribution is their assembly for agent accountability,
 and the discipline of saying exactly what that assembly does and does not

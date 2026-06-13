@@ -3,7 +3,7 @@
 **Version:** 0.2
 **Status:** Pilot — implemented and running in production on one workflow, with three production bugs discovered and fixed by AXR itself
 **Date:** 2026-05-15
-**Authors:** Chris Conen (Conen Digital), Claude (CTO, CENTAUR)
+**Author:** Chris Conen (Conen Digital)
 
 ---
 
@@ -601,5 +601,6 @@ The deactivated 0.1 workflow is retained as a rollback point until
 
 ---
 
-*The protocol, the generator, and the verifier were designed and built
-collaboratively under the CENTAUR model.*
+*The protocol, the generator, and the verifier were designed and built with AI
+assistance; every normative claim here is backed by the test suite and two
+independent verifiers.*
