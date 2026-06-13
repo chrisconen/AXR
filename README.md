@@ -6,8 +6,8 @@
 
 A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
 
-**Current version:** 1.0.0 — stable contract (frozen wire format, frozen CLI/verifier behaviour for 1.x)
-**Status:** Pilot running on one live workflow with **hourly Merkle anchoring and STH key separation in production** since June 2026, writing the frozen **0.2.1 wire format**. Four pre-existing production bugs discovered and fixed because the receipts made them visible — plus, during the 0.5–1.0 build, **eleven security/consistency findings caught and closed by independent multi-agent adversarial review** before release (see CHANGELOG).
+**Current version:** 1.5.1 — stable 1.x contract (frozen wire format + CLI/verifier behaviour + public JS SDK surface). The current map is **`AXR-SPEC-1.x.md`**; `AXR-SPEC-1.0.md` is the frozen 1.0 snapshot. Since 1.0, all additions are backward-compatible: emergency witness revocation (1.1), the `require('axr')` SDK + programmatic `verify()` (1.2/1.3), temporary witness suspension (1.4), partial control-disclosure (1.5).
+**Status:** Pilot running on one live workflow with **hourly Merkle anchoring and STH key separation in production** since June 2026, writing the frozen **0.2.1 wire format**. Four pre-existing production bugs discovered and fixed because the receipts made them visible — plus **fifteen security/consistency findings caught and closed by independent multi-agent adversarial review** before release (see CHANGELOG). The higher layers (key succession, quorum roots, control log, the full witness lifecycle) are tested and cross-impl verified, but **not yet exercised by the live pilot**.
 
 ### Maturity by layer
 
