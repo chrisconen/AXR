@@ -5,8 +5,8 @@ Ez a fájl a repo-specifikus munkakontextus. A persona és a globális elvek a
 
 ## Mi ez a repo
 
-Agent Execution Receipt: tamper-evident, Ed25519-aláírt execution receiptek
-AI-ágensekhez. Append-only JSONL, RFC 6962 Merkle + inkrementális MMR,
+Agent eXecution Receipts (AXR): tamper-evident, Ed25519-aláírt execution
+receiptek AI-ágensekhez. Append-only JSONL, RFC 6962 Merkle + inkrementális MMR,
 trust-root, key-role szeparáció, redactable mezők, monitor (split-view
 equivocation-detektálás). `package.json` verzió: 0.4.1; folyamatban: **0.5**.
 
