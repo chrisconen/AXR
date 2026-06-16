@@ -1,10 +1,10 @@
-# Agent Execution Receipt (AXR)
+# Agent eXecution Receipts (AXR)
 
 [![CI](https://github.com/chrisconen/AXR/actions/workflows/ci.yml/badge.svg)](https://github.com/chrisconen/AXR/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](package.json)
 
-A lightweight protocol for tamper-evident, cryptographically signed execution records of automated workflows and AI agents.
+A lightweight protocol for tamper-evident, cryptographically signed execution receipts for AI agents and n8n workflows.
 
 **Two axes, kept separate on purpose:**
 - **Protocol contract:** `1.5.1` — frozen wire format + CLI/verifier behaviour + public JS SDK for all of 1.x. The version tracks the *contract*, not the production footprint. Current map: **`AXR-SPEC-1.x.md`** (`AXR-SPEC-1.0.md` is the frozen 1.0 snapshot). Post-1.0 additions are all backward-compatible: emergency witness revocation (1.1), the `require('axr')` SDK + programmatic `verify()` (1.2/1.3), temporary witness suspension (1.4), partial control-disclosure (1.5).
