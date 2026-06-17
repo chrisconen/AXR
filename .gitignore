@@ -20,6 +20,8 @@ README-transparency-repo.md
 manifest.json
 axr ellenőrzés.txt
 lint teszt.txt
+# Go-to-market / launch-playbook (belso strategia, NEM publikus repo-tartalom)
+axr-gtm-plan.md
 # Belso AI-workbench persona/charter konfig (nem protokoll-dokumentum; lokalis marad).
 # A dogfoodhoz kello agents/log.js + agents/journal.jsonl TRACKED marad.
 agents/meridian/
