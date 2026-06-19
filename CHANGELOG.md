@@ -5,6 +5,46 @@ spec-version scheme used throughout the codebase (0.2 stable core, 0.3 anchoring
 0.4 redactable / side-effect / trust-root, 0.5 key succession, 0.6
 root-lifecycle hardening + SIEM export, 0.7 control log).
 
+## [Unreleased]
+
+Documentation / positioning, driven by community feedback (n8n community forum + X).
+No code, wire-format, CLI, or SDK change.
+
+### Added
+
+- **`COMMUNITY-FEEDBACK.md`** — tracks unsolicited, substantive feedback from
+  practitioners, with sources credited by name. First wave: storage-before-pruning
+  and behavioral legibility (shipped) + error-path receipts (planned, next cycle).
+- **`axr-n8n-node-hu-v0.2.3.js`** — restored the source of truth for the **live
+  pilot node** (v0.2.3 hardened), which previously existed only embedded in
+  `eco-clean-geo-cluster-booking-hu.json`; `test-node-v0.2.3.js` (a manual harness,
+  not part of `npm test`) referenced this missing file. Extracted byte-faithfully
+  from the workflow JSON and validated: the official `axr-verify.js` accepts its
+  output and rejects a tampered copy. Prep for the planned error-path-receipts work.
+
+### Changed
+
+- **README: storage-before-pruning guidance (P0).** The n8n "Storage" section now
+  states explicitly that receipts must go to durable, append-only external storage
+  *before* n8n pruning (`EXECUTIONS_DATA_PRUNE` / `EXECUTIONS_DATA_MAX_AGE`) runs.
+  The pilot is unaffected (it writes a bind-mounted JSONL outside execution data),
+  but anyone relying on execution history or a Data Table would lose the run
+  context. Credit: **nguyenthieutoan** (n8n community forum).
+- **README: behavioral legibility named as a first-class property (P1).** "What
+  AXR does" now separates *tamper-evidence* (the cryptographic floor) from
+  *behavioral legibility* (the day-to-day value — a receipt makes the workflow's
+  actual behavior readable enough that an internal contradiction surfaces, even
+  with no tampering and valid signatures). Bug B and the production-findings closer
+  name the property. Credit: an **X commenter** on the booking-bug thread.
+- **README: n8n node map corrected.** The Files table previously labelled
+  `axr-n8n-node.js` as the 0.2.1-hardened node, but that file is the pre-hardening
+  v0.2 reference. The table now distinguishes the reference node, the hardened
+  lineage (`axr-n8n-node-hu-v0.2.{1,2,3}.js`), and the live v0.2.3 deployment
+  embedded in `eco-clean-geo-cluster-booking-hu.json`.
+- **`test-node-v0.2.3.js`:** updated a stale assertion (Brain `logic_version` is
+  `5.2 HU` in the live node, not `5.1 HU`) and made the pepper-file `0o600` mode
+  check platform-aware (POSIX mode bits are not honoured on win32).
+
 ## [1.5.3] - 2026-06-13
 
 ### Fixed

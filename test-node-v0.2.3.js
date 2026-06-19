@@ -103,12 +103,17 @@ const logPath = path.join(dir, 'receipts-hu.jsonl');
 const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').map(JSON.parse);
 const wfRec = lines.find(r => r.receipt_type === 'workflow');
 const brainStep = lines.find(r => r.receipt_type === 'step' && r.step.node_name === 'The Brain (Logic)');
-check('logic_version frissult (Brain 5.1 HU)', brainStep.step.logic_version === '5.1 HU');
+check('logic_version frissult (Brain 5.2 HU)', brainStep.step.logic_version === '5.2 HU');
 check('logic_hash jelen van a step receiptben', /^sha256:[0-9a-f]{64}$/.test(brainStep.step.logic_hash || ''));
 check('customer_ref HMAC-os', /^hmac-sha256:[0-9a-f]{64}$/.test(wfRec.request.customer_ref || ''), wfRec.request.customer_ref);
-check('pepper letrejott 600-as moddal',
-  fs.existsSync(path.join(dir, 'customer-pepper.key')) &&
-  (fs.statSync(path.join(dir, 'customer-pepper.key')).mode & 0o777) === 0o600);
+// A pepper-fajl mode 0o600-zal jon letre; a POSIX mod-bit ellenorzes csak
+// ott ervenyes, ahol az OS tiszteletben tartja (win32-on a mod-bitek nem
+// jelennek meg ugyanigy, ezert ott csak a letrejottet ellenorizzuk).
+const pepperExists = fs.existsSync(path.join(dir, 'customer-pepper.key'));
+const pepperMode600 = process.platform === 'win32'
+  ? true
+  : (fs.statSync(path.join(dir, 'customer-pepper.key')).mode & 0o777) === 0o600;
+check('pepper letrejott 600-as moddal (win32: csak letrejott)', pepperExists && pepperMode600);
 
 // masodik futas: a lanc folytatodik + a pepper stabil (azonos ugyfel = azonos ref)
 let out2 = runNode(makeEnv(happyOutputs, [{ success: true }]));

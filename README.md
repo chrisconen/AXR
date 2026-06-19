@@ -105,6 +105,15 @@ It proves one thing: that a given workflow, on a given input, made a given decis
 
 It is not a workflow builder, not an agent framework, not an observability platform. It is the accountability layer that sits underneath those tools.
 
+### Two properties, kept separate
+
+AXR delivers two distinct things that are easy to conflate:
+
+1. **Tamper-evidence** — the cryptographic floor: a record has not changed since it was signed, and no record was inserted, deleted, or reordered without breaking a signature or a chain.
+2. **Behavioral legibility** — the day-to-day value: the receipt makes a workflow's *actual* behavior readable enough that an internal contradiction becomes visible — even when nobody tampered with anything and every signature is valid. Bug B below was exactly this: honest, validly-signed receipts whose recorded decision (`rejected`) contradicted the branch the workflow actually took (a `success` email). No attacker, no edit — the bug was in the behavior, and the receipt made it legible.
+
+**Tamper-evidence is the cryptographic floor. Behavioral legibility is what earns its keep day to day.** The first matters the day someone disputes a record; the second matters every day in between.
+
 ### Two receipt types
 
 A **step receipt** records the execution of a single decision-relevant node. A **workflow receipt** ties the step receipts for one run into a signed, chained record.
@@ -434,6 +443,8 @@ The generator reads from the `AXR Mark` node rather than the Calendar node itsel
 
 Receipts are appended to an append-only JSON Lines file, one receipt per line. Step receipts for a run are written first, followed by the workflow receipt. The file lives on a bind-mounted host directory so it survives container restarts.
 
+**Store receipts in durable external storage *before* n8n pruning runs.** n8n prunes its own execution data by default (`EXECUTIONS_DATA_PRUNE` + `EXECUTIONS_DATA_MAX_AGE`). The AXR chain itself survives pruning — but only because the pilot writes receipts to a bind-mounted JSONL **outside** n8n's execution data (`/home/node/.n8n/axr/receipts-hu.jsonl`), not into the execution history or a Data Table. This is the reference pattern: at receipt-generation time, write to durable, append-only external storage (file bind-mount / Postgres table / object storage). If you instead rely on n8n's execution history or a Data Table to hold receipts, the cryptographic chain may survive but the execution context that ties each receipt to its run gets pruned away — so either configure pruning deliberately or copy receipts out immediately. *(Gap surfaced by **nguyenthieutoan** on the n8n community forum — thank you.)*
+
 ---
 
 ## Verification
@@ -514,7 +525,7 @@ The live receipt log contains 0.1 and 0.2 receipts verifying together as one con
 
 Four pre-existing bugs in the pilot workflow — all present before AXR was deployed, none caused by it — became visible because the receipts (or the tooling around them) contradicted what the workflow was actually doing.
 
-**Bug B.** Every workflow run was firing all three response branches (success email, error response, conflict response) regardless of outcome. A `ZONE_INCOMPATIBLE` rejection still sent a success email. The receipt's `final_status` made the contradiction immediate and auditable. Fix: a `Switch` node routing on `__axr.final_status`.
+**Bug B.** Every workflow run was firing all three response branches (success email, error response, conflict response) regardless of outcome. A `ZONE_INCOMPATIBLE` rejection still sent a success email. The receipt's `final_status` made the contradiction immediate and auditable. This is **behavioral legibility**, not tamper-evidence: the receipts were honest and validly signed; nobody altered anything — the receipt simply made the workflow's real behavior readable enough that the mismatch surfaced. Fix: a `Switch` node routing on `__axr.final_status`.
 
 **Bug C.** Rejection responses sent `{"error": "unknown_error", "message": "<customer's own input>"}` — the rejection reason was lost, and the customer's own message was echoed back as the error. The receipt recorded the correct `final_status` on every run, contradicting what customers received. Fix: a `Build Error Response` Code node assembling the response from the Brain's output directly.
 
@@ -522,7 +533,7 @@ Four pre-existing bugs in the pilot workflow — all present before AXR was depl
 
 **Bug E.** After a routine geo-zoning bugfix bumped the Brain logic to v5.1, every receipt kept attesting `logic_version: '5.0'` — cryptographically valid signatures over a false claim about which code made the decision. A second, previously unknown mismatch (Normalize v3.3 attested as 3.2) surfaced in the same scan. Caught by the new `axr-workflow-lint.js`; fixed by code-hash fingerprints (`logic_hash`) in every receipt plus a CI gate that fails on drift. Lesson: version labels are testimony; code hashes are evidence.
 
-An accountability layer that produces honest receipts also makes silent failures loud.
+An accountability layer that produces honest receipts also makes silent failures loud. That is behavioral legibility at work: three of these four bugs (B, C, D) involved no tampering at all — valid signatures over honest records that simply made the workflow's real behavior readable enough for the contradiction to surface.
 
 ### Bugs AXR found in itself
 
@@ -566,7 +577,9 @@ AXR 0.2 is a working pilot. Each gap below is stated honestly; the 0.4 hardening
 |------|-------------|
 | `axr-core.js` | Shared library: canonicalization (RFC 8785/JCS, guarded), SHA-256, Ed25519 sign/verify, `splitAxrInput`; **0.3:** RFC 6962 Merkle tree (slice-free index-range), inclusion/consistency proofs, version-aware signing, `chainHash`, `splitAxrGen`, `buildGeneration`; **0.4:** redactable field commitments (`buildRedactable`, `redactField`, `verifyRedactable`), side-effect attestation (`attestSideEffect`, `verifySideEffect`), trust root (`buildTrustRoot`, `verifyTrustRoot`, `trustRootHasKey`), incremental Merkle / MMR (`mmrAppend`, `mmrRoot`, `mmrValid`) |
 | `axr-generator.js` | Receipt generator logic, testable outside n8n; **0.3:** `generateReceiptsV3` (marker-driven, handles generative steps + `inputs` evidence graph) |
-| `axr-n8n-node.js` | Drop-in n8n Code node (self-contained, no external dependencies); **0.2.1:** guarded canonicalizer, HMAC `customer_ref` + pepper bootstrap, fail-open, `logic_hash`, `AXR_DIR` env override |
+| `axr-n8n-node.js` | **Reference** drop-in n8n Code node (v0.2, self-contained, no external dependencies) — documents the `__axr_input` marker convention. *Not* the hardened production node (see next row). |
+| `axr-n8n-node-hu-v0.2.{1,2,3}.js` | **Hardened production lineage** of the n8n Code node (wire format still 0.2): guarded canonicalizer, HMAC `customer_ref` + pepper bootstrap, fail-open `__axr.error`, `logic_hash`, `AXR_DIR` env override (v0.2.1), chained-over-anchored-log fix (v0.2.2), n8n-sandbox `typeof` guard (v0.2.3). The **live pilot runs v0.2.3**, embedded as the `AXR Receipt Generator` node in `eco-clean-geo-cluster-booking-hu.json` |
+| `eco-clean-geo-cluster-booking-hu.json` | Exported live pilot workflow (ECO Clean HU geo-cluster booking) — the authoritative deployment of the v0.2.3 hardened node; `axr-workflow-lint.js` checks its attested nodes against the generator constants |
 | `axr-workflow-lint.js` | **0.2.1:** CI gate against logic drift — fingerprints every attested node's code (SHA-256) in the exported workflow JSON and fails on mismatch with the generator's `logic_version`/`logic_hash` constants (`--manifest` emits fresh fingerprints) |
 | `axr-verify.js` | Standalone verifier (checks 1–15): `node axr-verify.js receipts.jsonl public-key.pem [sth.jsonl] [anchors.jsonl]`; **0.4 flags:** `--strict`, `--sth-key`, `--trust-root`, `--online`; **0.5 flags:** `--successions`, `--log-id` (rotation-spanning verification) |
 | `axr_verify.py` | **Independent** zero-dependency Python verifier (own canonicalizer, pure-Python Ed25519, RFC 6962 Merkle) — cross-implementation proof |
