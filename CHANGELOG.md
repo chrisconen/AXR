@@ -36,14 +36,32 @@ No code, wire-format, CLI, or SDK change.
   actual behavior readable enough that an internal contradiction surfaces, even
   with no tampering and valid signatures). Bug B and the production-findings closer
   name the property. Credit: an **X commenter** on the booking-bug thread.
-- **README: n8n node map corrected.** The Files table previously labelled
-  `axr-n8n-node.js` as the 0.2.1-hardened node, but that file is the pre-hardening
-  v0.2 reference. The table now distinguishes the reference node, the hardened
-  lineage (`axr-n8n-node-hu-v0.2.{1,2,3}.js`), and the live v0.2.3 deployment
-  embedded in `eco-clean-geo-cluster-booking-hu.json`.
+- **`axr-n8n-node.js` hardened to the production node (closes the reference/production
+  gap).** The shipped, quickstart-referenced node was still the pre-hardening v0.2
+  (plain-SHA-256 `customer_ref`, no fail-open wrapper, unguarded canonicalizer) while
+  the README's 0.2.1 section described a hardened node — so anyone following the
+  quickstart got the weak node in production. `axr-n8n-node.js` now carries the full
+  v0.2.3 hardening (guarded canonicalizer, HMAC `customer_ref` + pepper bootstrap,
+  fail-open `__axr.error`, `logic_hash`, `AXR_DIR` env override, chained-over-anchored-log
+  fix, n8n-sandbox `typeof` guard); its logic is byte-equivalent to the live pilot's
+  `axr-n8n-node-hu-v0.2.3.js`. Wire format unchanged (still 0.2): existing
+  `receipts-hu.jsonl` chains continue to verify. The Files table and quickstart are
+  re-aligned; `axr-n8n-node-hu-v0.2.3.js` remains as the live-pilot source-of-truth.
+  Found by Meridian (Codex) during a code-vs-docs decomposition pass.
 - **`test-node-v0.2.3.js`:** updated a stale assertion (Brain `logic_version` is
   `5.2 HU` in the live node, not `5.1 HU`) and made the pepper-file `0o600` mode
   check platform-aware (POSIX mode bits are not honoured on win32).
+
+### Removed
+
+- **Stale n8n-node artifacts.** Removed superseded/transient node files now that
+  `axr-n8n-node.js` carries the canonical hardened logic and `axr-n8n-node-hu-v0.2.3.js`
+  is the live-pilot source-of-truth: the intermediate hardening snapshots
+  `axr-n8n-node-hu-v0.2.1.js` / `…-v0.2.2.js` and their harnesses
+  `test-node-v0.2.1.js` / `test-node-v0.2.2.js`, plus the one-off `patch-v022.js`,
+  the `axr-node-v022.js` intermediate, and the `axr-node-v021-backup.js` backup. The
+  per-version history is preserved in this changelog and git. No wire-format, CLI, SDK,
+  or test-suite change (the removed harnesses were never part of `npm test`).
 
 ## [1.5.3] - 2026-06-13
 

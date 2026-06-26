@@ -1,39 +1,82 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// AXR Receipt Generator - N8N Code Node v0.2
+// AXR Receipt Generator - N8N Code Node (hardened, wire format 0.2)
 // ═══════════════════════════════════════════════════════════════════════════════
-// Beillesztes: a workflow vegere, a Respond node-ok ELE.
-// Olvassa: Normalize Payload - HU, Check Day Schedule, The Brain (Logic),
-//          Fresh Calendar Check, Slot Still Free?, Create Booking
-// Ir: /home/node/.n8n/axr/receipts-hu.jsonl  (append-only)
-// Alair: /home/node/.n8n/axr/signing-key.pem  (ed25519)
-// Fuggoseg: csak beepitett modulok (crypto, fs) - NODE_FUNCTION_ALLOW_BUILTIN fedi
+// Ez a KANONIKUS, hardened referencia-node - a live pilot (eco-clean-geo-cluster-
+// booking-hu) ezt a logikat futtatja (a v0.2.x lineage: lasd axr-n8n-node-hu-
+// v0.2.{1,2,3}.js a verzionkenti valtozasnaploert). DROP-IN a workflow vegere, a
+// Respond node-ok ELE. A wire format valtozatlanul 0.2 - a meglevo
+// receipts-hu.jsonl lanc megszakitas nelkul folytatodik, a regi receiptek
+// tovabbra is verifikalnak.
+//
+// Olvassa: Normalize Payload - HU, AXR Mark: Check Day Schedule,
+//          The Brain (Logic), AXR Mark: Fresh Calendar Check,
+//          Slot Still Free?, AXR Mark: Create Booking
+// Ir:    $AXR_DIR/receipts-hu.jsonl   (append-only)
+// Alair: $AXR_DIR/signing-key.pem     (ed25519)
+// Pepper:$AXR_DIR/customer-pepper.key (32 byte hex, elso futaskor generalodik)
+// Fuggoseg: csak beepitett modulok (crypto, fs) - NODE_FUNCTION_ALLOW_BUILTIN fedi.
 //
 // ───────────────────────────────────────────────────────────────────────────────
-// 0.2 VALTOZAS (spec 7.1): az input_hash mostantol minden lepesnel a lepes
-// TENYLEGES inputjabol szamol, nem a kozos normalizalt payload-bol.
+// HARDENING (audit utan, a v0.2-hoz kepest - a wire format valtozatlanul 0.2):
 //
-// EHHEZ A WORKFLOW NODE-OKAT IS MODOSITANI KELL. Minden tanusitando node a
-// kimenetebe tesz egy __axr_input mezot, ami a node tenyleges bemenete:
+//  [P0] GUARDED CANONICALIZER - az axr-core.js 0.2+ guardjai portolva:
+//       NaN/Infinity/undefined EXPLICIT hibat dob, nem szerializalodik nemán
+//       "null"-la / kimarado mezove. Igy az alairas sosem fed eltero jelentest,
+//       es a JS<->Python cross-impl paritas elesben sem torhet el.
 //
-//   A HAROM CODE NODE (Normalize Payload - HU, The Brain (Logic),
-//   Slot Still Free?) - a return ELE:
+//  [P0] HMAC-os customer_ref - a sima sha256(name|email|phone) szotar-
+//       tamadassal visszafejtheto volt (aki ismer egy email-cimet, meg tudta
+//       erositeni, hogy az illeto foglalt-e). Mostantol HMAC-SHA256 egy titkos
+//       pepperrel; a pepper elso futaskor generalodik a kulcs melle (mode 600).
+//       FIGYELEM: az uj customer_ref ertekek nem linkelhetok a regiekkel - ez
+//       szandekos (a regi ertekek gyengek voltak).
+//
+//  [P0] N8N SANDBOX KOMPATIBILITAS (v0.2.3) - typeof-guard a 'process' elerese
+//       kore. Az n8n Code node sandboxban nincs process global; a guard nelkuli
+//       hivatkozas top-level ReferenceError volt, ami a fail-open try/catch ELOTT
+//       robban -> a teljes foglalas elbukik.
+//
+//  [P0] LANCOLAS HORGONYZOTT LOG FOLOTT (v0.2.2) - a readPrevWorkflowHash
+//       chainHash-szemantikaval hash-el (anchor_ref es redactable levagva).
+//       Enelkul az elso sidecar-horgonyzas utani foglalas torott lancszemet irt
+//       volna a logba.
+//
+//  [P1] FAIL-OPEN - a teljes AXR logika try/catch-ben fut. Ha barmi elbukik
+//       (hianyzo kulcs, betelt lemez), a FOGLALAS valaszol tovabb, a hiba pedig
+//       hangosan megjelenik a __axr.error mezoben. A receipt-lyuk igy lathato
+//       marad (lanc-hossz-mint-tanusag), de ugyfel-foglalast sosem tor el.
+//
+//  [AUDIT] logic_version a tenyleges kodhoz igazitva + logic_hash mezo: a node
+//       jsCode SHA-256 ujjlenyomata. A receipt igy nem csak egy kezzel irt
+//       cimket, hanem a kod tenyleges ujjlenyomatat tanusitja. A konstansokat
+//       az axr-workflow-lint.js tartja szinkronban (CI gate: exit 1 driftnel).
+//
+//  [OPS] AXR_DIR felulirhato env-bol (AXR_DIR) - tesztelhetoseg, dev/prod
+//       elvalasztas.
+//
+// ───────────────────────────────────────────────────────────────────────────────
+// A __axr_input MARKER KONVENCIO (spec 7.1): az input_hash minden lepesnel a
+// lepes TENYLEGES inputjabol szamol, nem a kozos normalizalt payload-bol. Ehhez a
+// workflow node-okat is fel kell keszteni - minden tanusitando node a kimenetebe
+// tesz egy __axr_input mezot, ami a node tenyleges bemenete:
+//
+//   A CODE NODE-OK (Normalize Payload - HU, The Brain (Logic), Slot Still Free?)
+//   - a return ELE:
 //       const __axrInput = $input.all().map(i => i.json);
 //       // ... a node sajat logikaja valtozatlanul ...
-//       // a return-nel minden kimeneti itemhez:
 //       return result.map(item => ({ json: { ...item.json, __axr_input: __axrInput } }));
 //   (eleg az ELSO kimeneti itembe tenni; a generator onnan olvassa)
 //
-//   A HAROM GOOGLE CALENDAR NODE (Check Day Schedule, Fresh Calendar Check,
-//   Create Booking) - sajat kodot nem futtatnak, ezert KOZVETLENUL UTANUK egy
-//   mini Code node "AXR Mark: <CalendarNodeName>" nevvel, ez a tartalma:
+//   A GOOGLE CALENDAR NODE-OK (Check Day Schedule, Fresh Calendar Check, Create
+//   Booking) - sajat kodot nem futtatnak, ezert KOZVETLENUL UTANUK egy mini Code
+//   node "AXR Mark: <CalendarNodeName>" nevvel:
 //       const calIn  = $('<az ELOTTE levo node neve>').all().map(i => i.json);
 //       const calOut = $input.all().map(i => i.json);
 //       return calOut.map((item, idx) => ({
 //         json: idx === 0 ? { ...item.json, __axr_input: calIn } : item.json
 //       }));
-//   FONTOS: a generator a Calendar node helyett a "AXR Mark: ..." node-ot
-//   olvassa - lasd a STEP_NODES.readFrom mezot lent.
-// ───────────────────────────────────────────────────────────────────────────────
+//   FONTOS: a generator a Calendar node helyett a "AXR Mark: ..." node-ot olvassa
+//   - lasd a STEP_NODES.readFrom mezot lent.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const crypto = require('crypto');
@@ -42,16 +85,35 @@ const fs = require('fs');
 const AXR_VERSION = '0.2';
 const AXR_INPUT_KEY = '__axr_input';
 
-const AXR_DIR = '/home/node/.n8n/axr';
+// v0.2.3: az n8n a Code node-ot sandboxolja - a 'process' global ott NEM
+// letezik. A typeof-guard nelkuli process-hivatkozas top-level ReferenceError,
+// ami a fail-open try/catch ELOTT robban -> a teljes foglalas elbukik.
+// (A tesztek sima Node-ban futottak, ahol van process - ezert nem bukott ki.)
+const AXR_DIR = (typeof process !== 'undefined' && process.env && process.env.AXR_DIR)
+  || '/home/node/.n8n/axr';
 const LOG_PATH = AXR_DIR + '/receipts-hu.jsonl';
 const KEY_PATH = AXR_DIR + '/signing-key.pem';
+const PEPPER_PATH = AXR_DIR + '/customer-pepper.key';
 
-// ── Kanonikus szerializalas: a hash/alairas csak fix kulcssorrenddel reprodukalhato
+// ── Kanonikus szerializalas - GUARDED (axr-core 0.2+ szerint) ──────────────────
+// NaN/Infinity/undefined: a JSON.stringify ezeket nemán "null"-la alakitja vagy
+// kihagyja - kulonbozo szemantika azonos bajtokra kepezve. EXPLICIT eldobjuk.
 function canonicalize(value) {
+  if (value === undefined) {
+    throw new Error('AXR canonicalize: undefined ertek nem szerializalhato');
+  }
+  if (typeof value === 'number' && !Number.isFinite(value)) {
+    throw new Error('AXR canonicalize: NaN/Infinity nem szerializalhato');
+  }
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return '[' + value.map(canonicalize).join(',') + ']';
   const keys = Object.keys(value).sort();
-  return '{' + keys.map(k => JSON.stringify(k) + ':' + canonicalize(value[k])).join(',') + '}';
+  return '{' + keys.map(k => {
+    if (value[k] === undefined) {
+      throw new Error(`AXR canonicalize: undefined ertek a(z) "${k}" kulcsnal`);
+    }
+    return JSON.stringify(k) + ':' + canonicalize(value[k]);
+  }).join(',') + '}';
 }
 function sha256(value) {
   const input = typeof value === 'string' ? value : canonicalize(value);
@@ -62,15 +124,30 @@ function signReceipt(receiptWithoutSignature, privateKeyPem) {
   const message = Buffer.from(canonicalize(receiptWithoutSignature), 'utf8');
   return crypto.sign(null, message, privateKey).toString('base64');
 }
-function customerRef(name, email, phone) {
-  return sha256([name || '', email || '', phone || ''].join('|').toLowerCase());
+
+// ── Pepperes (HMAC) ugyfel-referencia ──────────────────────────────────────────
+// A pepper nelkuli sha256 szotar-tamadhato volt. A pepper a kulcs mellett el,
+// elso futaskor generalodik. Ha a pepper-fajl nem irhato, a customer_ref null
+// lesz es warning keletkezik - hamis/gyenge erteket nem irunk.
+function loadOrCreatePepper() {
+  if (fs.existsSync(PEPPER_PATH)) {
+    return fs.readFileSync(PEPPER_PATH, 'utf8').trim();
+  }
+  const pepper = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(PEPPER_PATH, pepper + '\n', { encoding: 'utf8', mode: 0o600 });
+  return pepper;
+}
+function customerRef(pepper, name, email, phone) {
+  if (!pepper) return null;
+  const msg = [name || '', email || '', phone || ''].join('|').toLowerCase();
+  return 'hmac-sha256:' + crypto.createHmac('sha256', pepper).update(msg, 'utf8').digest('hex');
 }
 
-// ── __axr_input marker levalasztasa a node kimenetterol ───────────────────────
+// ── __axr_input marker levalasztasa a node kimenetterol ────────────────────────
 // Visszaad: { input, output }
 //   input  : a node tenyleges bemenete (a marker erteke), vagy undefined
-//   output : a kimenet a marker NELKUL - ezt hash-eljuk output_hash-kent, hogy
-//            a marker jelenlete ne valtoztassa meg az output_hash-t
+//   output : a kimenet a marker NELKUL - ezt hash-eljuk output_hash-kent, hogy a
+//            marker jelenlete ne valtoztassa meg az output_hash-t
 function splitAxrInput(nodeOutput) {
   if (Array.isArray(nodeOutput)) {
     if (nodeOutput.length === 0) return { input: undefined, output: nodeOutput };
@@ -89,7 +166,7 @@ function splitAxrInput(nodeOutput) {
   return { input: undefined, output: nodeOutput };
 }
 
-// ── Biztonsagos node-kimenet olvasas: ha a node nem futott, null-t ad vissza ───
+// ── Biztonsagos node-kimenet olvasas: ha a node nem futott, null-t ad vissza ────
 function safeGet(nodeName) {
   try {
     const items = $(nodeName).all();
@@ -149,13 +226,21 @@ function buildDecisionSummary(brain, finalStatus) {
 }
 
 // ── Elozo workflow receipt hash kiolvasasa a JSONL utolso workflow sorabol ─────
+// FONTOS (v0.2.2): a lancolasi hash chainHash-szemantikaval keszul - az
+// anchor_ref-et (es a redactable-t) LEVAGJUK hash-eles elott. A sidecar ugyanis
+// utolag anchor_ref-et ir vissza a lemezen levo receiptekbe; ha a teljes sort
+// hash-elnenk, az elso horgonyzas UTANI foglalas torott lancszemet irna a logba
+// (a verifier chainHash-e anchor_ref nelkul szamol).
 function readPrevWorkflowHash() {
   try {
     if (!fs.existsSync(LOG_PATH)) return null;
     const lines = fs.readFileSync(LOG_PATH, 'utf8').trim().split('\n').filter(Boolean);
     for (let i = lines.length - 1; i >= 0; i--) {
       const rec = JSON.parse(lines[i]);
-      if (rec.receipt_type === 'workflow') return sha256(rec);
+      if (rec.receipt_type === 'workflow') {
+        const { anchor_ref, redactable, ...chainable } = rec;
+        return sha256(chainable);
+      }
     }
     return null;
   } catch (e) {
@@ -164,174 +249,195 @@ function readPrevWorkflowHash() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FO LOGIKA
-// ═══════════════════════════════════════════════════════════════════════════════
-
 // STEP_NODES - a tanusitando node-ok fix sorrendben.
-//  node     : a tanusitando node logikai neve (ez kerul a receiptbe)
-//  readFrom : melyik node KIMENETET olvassa a generator. A Code node-oknal ez
-//             megegyezik a node-dal (sajat maguk teszik be a markert). A
-//             Calendar node-oknal ez a kozvetlenul utanuk levo "AXR Mark: ..."
-//             mini Code node, mert a Calendar node maga nem tud markert tenni.
+// A logic_version es logic_hash ertekeket az axr-workflow-lint.js tartja
+// szinkronban a tenyleges node-koddal:
+//   node axr-workflow-lint.js workflow.json        -> drift eseten exit 1
+//   node axr-workflow-lint.js workflow.json --manifest m.json -> friss hash-ek
+// NE frissitsd kezzel hash-szamolas nelkul - a lint a forras.
+// ═══════════════════════════════════════════════════════════════════════════════
 const STEP_NODES = [
   { node: 'Normalize Payload - HU', readFrom: 'Normalize Payload - HU',
-    type: 'n8n-nodes-base.code',          logic_version: '3.2 HU' },
+    type: 'n8n-nodes-base.code',          logic_version: '3.3 HU',
+    logic_hash: 'sha256:ca343b08b7aee19b0481a1fc8609fac506051a9e40953a55e9868a026ab71563' },
   { node: 'Check Day Schedule',     readFrom: 'AXR Mark: Check Day Schedule',
-    type: 'n8n-nodes-base.googleCalendar', logic_version: null     },
+    type: 'n8n-nodes-base.googleCalendar', logic_version: null, logic_hash: null },
   { node: 'The Brain (Logic)',      readFrom: 'The Brain (Logic)',
-    type: 'n8n-nodes-base.code',          logic_version: '5.0 HU' },
+    type: 'n8n-nodes-base.code',          logic_version: '5.2 HU',
+    logic_hash: 'sha256:bd4e8c1a704a052b317e27dc89f0f733bbcddf9216b8bca5b38c62ac35f44685' },
   { node: 'Fresh Calendar Check',   readFrom: 'AXR Mark: Fresh Calendar Check',
-    type: 'n8n-nodes-base.googleCalendar', logic_version: null     },
+    type: 'n8n-nodes-base.googleCalendar', logic_version: null, logic_hash: null },
   { node: 'Slot Still Free?',       readFrom: 'Slot Still Free?',
-    type: 'n8n-nodes-base.code',          logic_version: null     },
+    type: 'n8n-nodes-base.code',          logic_version: '2.0 HU',
+    logic_hash: 'sha256:76b1266865e855c45987ca4018b4be1431ec26451ef33470e8f2316de2d1c026' },
   { node: 'Create Booking',         readFrom: 'AXR Mark: Create Booking',
-    type: 'n8n-nodes-base.googleCalendar', logic_version: null     }
+    type: 'n8n-nodes-base.googleCalendar', logic_version: null, logic_hash: null }
 ];
 
-const privateKeyPem = fs.readFileSync(KEY_PATH, 'utf8');
-const nowIso = new Date().toISOString();
+// ═══════════════════════════════════════════════════════════════════════════════
+// FO LOGIKA - fail-open burokban
+// ═══════════════════════════════════════════════════════════════════════════════
+// A passthrough MINDIG megtortenik. Ha az AXR-blokk elbukik, a __axr.error
+// hordozza a hibat (lathato lyuk), de a foglalasi valasz nem serul.
 
-// Normalize kimenet -> a .body tartalmazza a normalizalt adatot.
-// FONTOS: a Normalize node 0.2-ben mar __axr_input markert is tartalmaz,
-// ezert eloszor levalasztjuk azt, mielott a body-t kiolvassuk.
-const normalizeRaw = safeGet('Normalize Payload - HU');
-const normalizeClean = normalizeRaw ? splitAxrInput(normalizeRaw).output : null;
-const normalizedBody = normalizeClean && normalizeClean[0]
-  ? (normalizeClean[0].body || normalizeClean[0])
-  : {};
-const rawWebhookBody = normalizeClean && normalizeClean[0] && normalizeClean[0].originalPayload
-  ? normalizeClean[0].originalPayload
-  : normalizedBody;
+const passthrough = $input.all();
+let axrSummary;
 
-// Brain kimenet (a markert itt is levalasztjuk a dontes kiolvasasa elott)
-const brainRaw = safeGet('The Brain (Logic)');
-const brainClean = brainRaw ? splitAxrInput(brainRaw).output : null;
-const brainOutput = brainClean && brainClean[0] ? brainClean[0] : {};
-const brain = extractBrainDecision(brainOutput);
-
-const workflowReceiptId = crypto.randomUUID();
-
-// ── Lepes-receiptek ────────────────────────────────────────────────────────────
-const stepReceipts = [];
-const warnings = [];
-let prevStepHash = null;
-let sequence = 0;
-
-for (const def of STEP_NODES) {
-  // a tanusitando node lefutott-e? (a Calendar node-oknal a node sajat
-  // kimenete a megbizhato jel, nem a marker-node)
-  const ran = safeGet(def.node);
-  if (ran === null) continue;
-
-  // a generator a readFrom node kimenetebol szedi az adatot (Code node-nal
-  // ez maga a node, Calendar node-nal a "AXR Mark: ..." mini node)
-  const rawOutput = safeGet(def.readFrom);
-  const { input: stepInput, output: cleanOutput } =
-    rawOutput === null ? { input: undefined, output: ran } : splitAxrInput(rawOutput);
-
-  let inputHash;
-  if (stepInput === undefined) {
-    inputHash = null; // nincs marker - nem talalunk ki hamis hash-t
-    warnings.push(`${def.node}: nincs __axr_input marker (readFrom: ${def.readFrom}) - input_hash null`);
-  } else {
-    inputHash = sha256(stepInput);
+try {
+  const privateKeyPem = fs.readFileSync(KEY_PATH, 'utf8');
+  let pepper = null;
+  const warnings = [];
+  try {
+    pepper = loadOrCreatePepper();
+  } catch (e) {
+    warnings.push(`pepper nem olvashato/irhato (${e.message}) - customer_ref null`);
   }
 
-  sequence += 1;
-  const stepBody = {
+  const nowIso = new Date().toISOString();
+
+  const normalizeRaw = safeGet('Normalize Payload - HU');
+  const normalizeClean = normalizeRaw ? splitAxrInput(normalizeRaw).output : null;
+  const normalizedBody = normalizeClean && normalizeClean[0]
+    ? (normalizeClean[0].body || normalizeClean[0])
+    : {};
+  const rawWebhookBody = normalizeClean && normalizeClean[0] && normalizeClean[0].originalPayload
+    ? normalizeClean[0].originalPayload
+    : normalizedBody;
+
+  const brainRaw = safeGet('The Brain (Logic)');
+  const brainClean = brainRaw ? splitAxrInput(brainRaw).output : null;
+  const brainOutput = brainClean && brainClean[0] ? brainClean[0] : {};
+  const brain = extractBrainDecision(brainOutput);
+
+  const workflowReceiptId = crypto.randomUUID();
+
+  // ── Lepes-receiptek ──────────────────────────────────────────────────────────
+  const stepReceipts = [];
+  let prevStepHash = null;
+  let sequence = 0;
+
+  for (const def of STEP_NODES) {
+    const ran = safeGet(def.node);
+    if (ran === null) continue;
+
+    const rawOutput = safeGet(def.readFrom);
+    const { input: stepInput, output: cleanOutput } =
+      rawOutput === null ? { input: undefined, output: ran } : splitAxrInput(rawOutput);
+
+    let inputHash;
+    if (stepInput === undefined) {
+      inputHash = null;
+      warnings.push(`${def.node}: nincs __axr_input marker (readFrom: ${def.readFrom}) - input_hash null`);
+    } else {
+      inputHash = sha256(stepInput);
+    }
+
+    sequence += 1;
+    const stepBody = {
+      axr_version: AXR_VERSION,
+      receipt_type: 'step',
+      receipt_id: crypto.randomUUID(),
+      workflow_receipt_id: workflowReceiptId,
+      sequence: sequence,
+      timestamp: nowIso,
+      step: {
+        node_name: def.node,
+        node_type: def.type,
+        logic_version: def.logic_version,
+        logic_hash: def.logic_hash,
+        model: null,
+        deterministic: true
+      },
+      io: {
+        input_hash: inputHash,
+        output_hash: sha256(cleanOutput),
+        input_summary: buildInputSummary(def.node, cleanOutput, normalizedBody),
+        decision: def.node === 'The Brain (Logic)' ? brain : null
+      },
+      approval: null,
+      previous_receipt_hash: prevStepHash
+    };
+    const signature = signReceipt(stepBody, privateKeyPem);
+    const stepReceipt = { ...stepBody, signature };
+    prevStepHash = sha256(stepReceipt);
+    stepReceipts.push(stepReceipt);
+  }
+
+  // ── final_status meghatarozasa ─────────────────────────────────────────────────
+  // Ha a Brain igent mondott de a Create Booking nem futott -> recheck konfliktus
+  let finalStatus = brain.status;
+  const createBookingRan = safeGet('Create Booking') !== null;
+  const slotStillFreeRan = safeGet('Slot Still Free?') !== null;
+  if (brain.available && slotStillFreeRan && !createBookingRan) {
+    finalStatus = 'SLOT_TAKEN_ON_RECHECK';
+  }
+
+  // ── Workflow receipt ───────────────────────────────────────────────────────────
+  const workflowBody = {
     axr_version: AXR_VERSION,
-    receipt_type: 'step',
-    receipt_id: crypto.randomUUID(),
-    workflow_receipt_id: workflowReceiptId,
-    sequence: sequence,
-    timestamp: nowIso,
-    step: {
-      node_name: def.node,
-      node_type: def.type,
-      logic_version: def.logic_version,
-      model: null,
-      deterministic: true
+    receipt_type: 'workflow',
+    receipt_id: workflowReceiptId,
+    workflow: {
+      workflow_id: 'eco-clean-geo-cluster-booking-hu',
+      workflow_version: '5.1',
+      webhook_path: 'booking-request-hu',
+      trigger_timestamp: nowIso,
+      completion_timestamp: nowIso
     },
-    io: {
-      input_hash: inputHash,
-      output_hash: sha256(cleanOutput),
-      input_summary: buildInputSummary(def.node, cleanOutput, normalizedBody),
-      decision: def.node === 'The Brain (Logic)' ? brain : null
+    actor: {
+      agent_id: 'eco-clean-booking-hu',
+      agent_type: 'n8n-workflow',
+      operator: 'Conen Digital',
+      on_behalf_of: 'ECO Clean HU'
     },
+    request: {
+      input_hash: sha256(rawWebhookBody),
+      customer_ref: customerRef(pepper, rawWebhookBody.name, rawWebhookBody.email, rawWebhookBody.phone)
+    },
+    outcome: {
+      final_status: finalStatus,
+      available: brain.available && finalStatus === brain.status,
+      decision_summary: buildDecisionSummary(brain, finalStatus)
+    },
+    step_chain: stepReceipts.map(r => r.receipt_id),
+    chain_root_hash: prevStepHash,
     approval: null,
-    previous_receipt_hash: prevStepHash
+    previous_receipt_hash: readPrevWorkflowHash()
   };
-  const signature = signReceipt(stepBody, privateKeyPem);
-  const stepReceipt = { ...stepBody, signature };
-  prevStepHash = sha256(stepReceipt);
-  stepReceipts.push(stepReceipt);
-}
+  const workflowSignature = signReceipt(workflowBody, privateKeyPem);
+  const workflowReceipt = { ...workflowBody, signature: workflowSignature };
 
-// ── final_status meghatarozasa ─────────────────────────────────────────────────
-// Ha a Brain igent mondott de a Create Booking nem futott -> recheck konfliktus
-let finalStatus = brain.status;
-const createBookingRan = safeGet('Create Booking') !== null;
-const slotStillFreeRan = safeGet('Slot Still Free?') !== null;
-if (brain.available && slotStillFreeRan && !createBookingRan) {
-  finalStatus = 'SLOT_TAKEN_ON_RECHECK';
-}
+  // ── Kiiras a JSONL-be: eloszor a lepesek, majd a workflow receipt ──────────────
+  const linesToAppend = [
+    ...stepReceipts.map(r => JSON.stringify(r)),
+    JSON.stringify(workflowReceipt)
+  ].join('\n') + '\n';
 
-// ── Workflow receipt ───────────────────────────────────────────────────────────
-const workflowBody = {
-  axr_version: AXR_VERSION,
-  receipt_type: 'workflow',
-  receipt_id: workflowReceiptId,
-  workflow: {
-    workflow_id: 'eco-clean-geo-cluster-booking-hu',
-    workflow_version: '5.0',
-    webhook_path: 'booking-request-hu',
-    trigger_timestamp: nowIso,
-    completion_timestamp: nowIso
-  },
-  actor: {
-    agent_id: 'eco-clean-booking-hu',
-    agent_type: 'n8n-workflow',
-    operator: 'Conen Digital',
-    on_behalf_of: 'ECO Clean HU'
-  },
-  request: {
-    input_hash: sha256(rawWebhookBody),
-    customer_ref: customerRef(rawWebhookBody.name, rawWebhookBody.email, rawWebhookBody.phone)
-  },
-  outcome: {
+  fs.appendFileSync(LOG_PATH, linesToAppend, 'utf8');
+
+  axrSummary = {
+    workflow_receipt_id: workflowReceiptId,
     final_status: finalStatus,
-    available: brain.available && finalStatus === brain.status,
-    decision_summary: buildDecisionSummary(brain, finalStatus)
-  },
-  step_chain: stepReceipts.map(r => r.receipt_id),
-  chain_root_hash: prevStepHash,
-  approval: null,
-  previous_receipt_hash: readPrevWorkflowHash()
-};
-const workflowSignature = signReceipt(workflowBody, privateKeyPem);
-const workflowReceipt = { ...workflowBody, signature: workflowSignature };
-
-// ── Kiiras a JSONL-be: eloszor a lepesek, majd a workflow receipt ──────────────
-const linesToAppend = [
-  ...stepReceipts.map(r => JSON.stringify(r)),
-  JSON.stringify(workflowReceipt)
-].join('\n') + '\n';
-
-fs.appendFileSync(LOG_PATH, linesToAppend, 'utf8');
+    step_count: stepReceipts.length,
+    axr_version: AXR_VERSION,
+    warnings: warnings,
+    logged_at: nowIso
+  };
+} catch (e) {
+  // FAIL-OPEN: a foglalas valaszol tovabb, a hiba hangos es lathato.
+  axrSummary = {
+    workflow_receipt_id: null,
+    final_status: null,
+    step_count: 0,
+    axr_version: AXR_VERSION,
+    error: `AXR receipt generalas elbukott: ${e.message}`,
+    warnings: [],
+    logged_at: new Date().toISOString()
+  };
+}
 
 // ── A node tovabbadja az eredeti adatot + egy axr osszefoglalo blokkot ────────
 // Igy a Respond node-ok valtozatlanul mukodnek tovabb.
-const passthrough = $input.all();
 return passthrough.map(item => ({
-  json: {
-    ...item.json,
-    __axr: {
-      workflow_receipt_id: workflowReceiptId,
-      final_status: finalStatus,
-      step_count: stepReceipts.length,
-      axr_version: AXR_VERSION,
-      warnings: warnings,
-      logged_at: nowIso
-    }
-  }
+  json: { ...item.json, __axr: axrSummary }
 }));
