@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](package.json)
 
-A lightweight protocol for tamper-evident, cryptographically signed execution receipts for AI agents and n8n workflows.
+Your AI agent's own log is not evidence: anything that can write the log can rewrite it, and the platform's word is testimony, not proof. **AXR (Agent eXecution Receipts)** is a lightweight protocol for a tamper-evident audit trail for AI agents and n8n workflows — cryptographically signed, hash-chained execution receipts that let anyone independently verify what an agent actually did, with no trust in the platform that ran it. Try it in 30 seconds: [drop a log into the browser verifier](https://chrisconen.dev/axr/verify/) — every Ed25519 signature and chain hash is recomputed client-side, nothing is uploaded.
 
 **Two axes, kept separate on purpose:**
 - **Protocol contract:** `1.5.1` — frozen wire format + CLI/verifier behaviour + public JS SDK for all of 1.x. The version tracks the *contract*, not the production footprint. Current map: **`AXR-SPEC-1.x.md`** (`AXR-SPEC-1.0.md` is the frozen 1.0 snapshot). Post-1.0 additions are all backward-compatible: emergency witness revocation (1.1), the `require('axr')` SDK + programmatic `verify()` (1.2/1.3), temporary witness suspension (1.4), partial control-disclosure (1.5).
