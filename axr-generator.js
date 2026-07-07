@@ -205,7 +205,106 @@ function buildDecisionSummary(brain, finalStatus) {
   return `Elutasitva: ${brain.status}, ok: ${brain.reason}, zona: ${brain.cluster_id || 'ismeretlen'}`;
 }
 
-module.exports = { generateReceipts, STEP_NODES, generateReceiptsV3 };
+// ── Error-path receipt (P2) ─────────────────────────────────────────────────
+// Egy BUKOTT futas (node throw / workflow error-out) is kapjon ALAIRT, LANCOLT
+// receiptet. Ma a generator csak a happy path-ot es az explicit elutasitasokat
+// (final_status) fedi; a kemeny hiba a try/catch-ben egy __axr.error
+// passthrough-ra esik, signed receipt nelkul - pedig vitathatoan a bukott futas
+// a legfontosabb, amirol bizonyitek kell (forras: nguyenthieutoan, n8n forum).
+//
+// SCOPE: ez a generator LEFEDETTSEGET bovit, NEM a wire formatot. Ez egy normal
+// 'workflow' receipt, aminek a final_status-a WORKFLOW_ERROR (kulon, egyertelmu
+// hiba-allapot), plusz egy ADDITIV 'error' bizonyitek-blokk - ugyanugy additiv,
+// ahogy a 0.3 'generation' vagy a 0.4 'side_effects' volt. A verifier (1-6/15.
+// ellenorzes) valtozatlanul elfogadja: nincs uj ellenorzes, nincs uj exit-kod,
+// a regi logok byte-azonosan verifikalnak. A frozen 1.x kontraktus erintetlen.
+//
+// ADATVEDELEM: a hibauzenet PII-t / ugyfel-inputot tartalmazhat (lasd Bug C, ahol
+// a rejection a customer sajat uzenetet visszhangozta), ezert CSAK a sha256
+// ujjlenyomatat (message_hash) tanusitjuk - a cleartext SOSEM kerul a logba.
+//
+// ctx:
+//   error: { failed_node?, error_class?, message?, execution_id?, occurred_at? }
+//   privateKeyPem        -> az alairo kulcs (kotelezo)
+//   rawWebhookBody?      -> ha elerheto: request.input_hash + customer_ref ebbol
+//   prevWorkflowHash?    -> az elozo workflow receipt chainHash-e ezen az agenten
+//   workflow?, actor?    -> metaadat-felulirasok (default: a pilot ertekei)
+//   axrVersion?          -> default a pilot 0.2 (igy a meglevo lanccal folytatodik)
+//   stepReceipts?        -> opcionalis, MAR alairt+lancolt reszleges lepesek
+//   chainRootHash?       -> ha vannak stepReceipts: az utolso chainHash-e
+//   triggerTimestamp?, completionTimestamp?
+function generateErrorReceipt(ctx) {
+  if (!ctx || !ctx.privateKeyPem) {
+    throw new Error('generateErrorReceipt: privateKeyPem kotelezo');
+  }
+  const V = ctx.axrVersion || axr.AXR_VERSION;
+  const workflowReceiptId = axr.uuid();
+  const triggerTs = ctx.triggerTimestamp || new Date().toISOString();
+  const err = ctx.error || {};
+
+  const errorBlock = {
+    failed_node: err.failed_node || null,
+    error_class: err.error_class || null,
+    // PII-vedelem: csak az ujjlenyomat, sosem a cleartext uzenet
+    message_hash: (err.message !== undefined && err.message !== null)
+      ? axr.sha256(String(err.message)) : null,
+    execution_id: err.execution_id || null,
+    occurred_at: err.occurred_at || triggerTs
+  };
+
+  const stepReceipts = Array.isArray(ctx.stepReceipts) ? ctx.stepReceipts : [];
+
+  const workflowBody = {
+    axr_version: V,
+    receipt_type: 'workflow',
+    receipt_id: workflowReceiptId,
+    workflow: {
+      workflow_id: (ctx.workflow && ctx.workflow.workflow_id) || 'eco-clean-geo-cluster-booking-hu',
+      workflow_version: (ctx.workflow && ctx.workflow.workflow_version) || '5.0',
+      webhook_path: (ctx.workflow && ctx.workflow.webhook_path) || 'booking-request-hu',
+      trigger_timestamp: triggerTs,
+      completion_timestamp: ctx.completionTimestamp || new Date().toISOString()
+    },
+    actor: ctx.actor || {
+      agent_id: 'eco-clean-booking-hu',
+      agent_type: 'n8n-workflow',
+      operator: 'Conen Digital',
+      on_behalf_of: 'ECO Clean HU'
+    },
+    request: {
+      input_hash: ctx.rawWebhookBody ? axr.sha256(ctx.rawWebhookBody) : null,
+      customer_ref: ctx.rawWebhookBody
+        ? axr.customerRef(ctx.rawWebhookBody.name, ctx.rawWebhookBody.email, ctx.rawWebhookBody.phone)
+        : null
+    },
+    outcome: {
+      final_status: 'WORKFLOW_ERROR',
+      available: false,
+      decision_summary: buildErrorSummary(errorBlock)
+    },
+    error: errorBlock,
+    step_chain: stepReceipts.map(r => r.receipt_id),
+    // verifier 3. ellenorzes: lepesek nelkul a chain_root_hash null kell legyen
+    chain_root_hash: stepReceipts.length ? (ctx.chainRootHash || null) : null,
+    approval: null,
+    previous_receipt_hash: ctx.prevWorkflowHash || null
+  };
+
+  const signature = axr.signReceipt(workflowBody, ctx.privateKeyPem);
+  const workflowReceipt = { ...workflowBody, signature };
+  const workflowReceiptHash = axr.chainHash(workflowReceipt);
+
+  return { workflowReceipt, workflowReceiptHash, stepReceipts, warnings: [] };
+}
+
+// Nem-PII osszefoglalo a hiba-receipthez (a cleartext uzenet sosem kerul bele).
+function buildErrorSummary(errorBlock) {
+  const node = errorBlock.failed_node || 'ismeretlen node';
+  const cls = errorBlock.error_class || 'ismeretlen hiba';
+  return `Hibas futas: "${node}" elszallt (${cls}) - a foglalas nem fejezodott be`;
+}
+
+module.exports = { generateReceipts, STEP_NODES, generateReceiptsV3, generateErrorReceipt };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 0.3 generator (Stage C) - marker-vezerelt, generativ lepeseket is kezel
