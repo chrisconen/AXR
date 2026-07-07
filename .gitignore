@@ -29,3 +29,8 @@ axr-gtm-plan.md
 # Belso AI-workbench persona/charter konfig (nem protokoll-dokumentum; lokalis marad).
 # A dogfoodhoz kello agents/log.js + agents/journal.jsonl TRACKED marad.
 agents/meridian/
+# Belso strategiai / elemzesi dokumentumok (nem publikus repo-tartalom)
+fejlesztesi-terv.md
+AXR-ELEMZES.md
+AXR-KAMPANY.md
+AXR-TERMEKLEIRAS.md
